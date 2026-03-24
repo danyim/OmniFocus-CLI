@@ -14,34 +14,6 @@ permissions:
   packages: write
 
 jobs:
-  python-artifacts:
-    name: Build Python Artifacts
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.14"
-
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
-
-      - name: Install build backend
-        run: pip install build
-
-      - name: Build sdist and wheel
-        run: python -m build
-
-      - name: Upload distribution artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: python-dist
-          path: dist/*
-
   container-image:
     name: Publish Container Image
     runs-on: ubuntu-latest
@@ -69,19 +41,28 @@ jobs:
 
   github-release:
     name: Create GitHub Release
-    needs:
-      - python-artifacts
-      - container-image
+    needs: container-image
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download Python artifacts
-        uses: actions/download-artifact@v5
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
-          name: python-dist
-          path: dist
+          python-version: "3.14"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install build backend
+        run: pip install build
+
+      - name: Build release artifacts
+        run: python -m build
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/*
