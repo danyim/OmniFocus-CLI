@@ -205,6 +205,15 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "task_id": {"type": "string"},
                     "name": {"type": "string"},
+                    "project_id": {"type": "string", "description": "Move task into this project"},
+                    "clear_project": {
+                        "type": "boolean",
+                        "description": "Remove project assignment and move task to inbox",
+                    },
+                    "inbox": {
+                        "type": "boolean",
+                        "description": "When true, move task to inbox",
+                    },
                     "due": {"type": "string", "description": "ISO 8601 datetime or empty to clear"},
                     "defer": {
                         "type": "string",
@@ -221,6 +230,7 @@ async def list_tools() -> list[Tool]:
                         "items": {"type": "string"},
                         "description": "Replace tag IDs on the task",
                     },
+                    "clear_tags": {"type": "boolean"},
                     "dropped": {"type": "boolean"},
                 },
                 "required": ["task_id"],
@@ -437,6 +447,36 @@ async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
     if task is None:
         return _text({"error": f"Task not found: {task_id}"})
 
+    project_id_value = str(args["project_id"]) if "project_id" in args else None
+    clear_project = bool(args.get("clear_project", False))
+    inbox_requested = "inbox" in args
+    inbox_value = bool(args.get("inbox")) if inbox_requested else None
+
+    if project_id_value and clear_project:
+        return _text({"error": "project_id and clear_project cannot be combined"})
+    if project_id_value and inbox_value is True:
+        return _text({"error": "project_id and inbox=true cannot be combined"})
+    if clear_project and inbox_value is False:
+        return _text({"error": "clear_project cannot be combined with inbox=false"})
+
+    new_parent_task_id = task.parent_task_id
+    new_project_id = task.project_id
+    new_inbox = task.inbox
+
+    if project_id_value:
+        project = model.projects.get(project_id_value)
+        if project is None:
+            return _text({"error": f"Project not found: {project_id_value}"})
+        if project.status != "active":
+            return _text({"error": f"Project is not active: {project_id_value}"})
+        new_parent_task_id = project.id
+        new_project_id = project.id
+        new_inbox = False
+    elif clear_project or inbox_value is True:
+        new_parent_task_id = None
+        new_project_id = None
+        new_inbox = True
+
     now = datetime.now(UTC)
     estimate_value = task.estimated_minutes
     if "estimate" in args:
@@ -455,17 +495,33 @@ async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
     elif "dropped" in args and args.get("dropped") is False:
         hidden_value = None
 
+    if args.get("clear_tags") and "tag_ids" in args:
+        return _text({"error": "tag_ids and clear_tags cannot be combined"})
+
+    tag_ids: tuple[str, ...]
+    if args.get("clear_tags"):
+        tag_ids = ()
+    elif "tag_ids" in args:
+        tag_ids = tuple(str(tag_id) for tag_id in args["tag_ids"])
+        missing_tag_ids = [tag_id for tag_id in tag_ids if tag_id not in model.tags]
+        if missing_tag_ids:
+            joined = ", ".join(missing_tag_ids)
+            return _text({"error": f"Unknown tag IDs: {joined}"})
+    else:
+        tag_ids = task.tag_ids
+
     updated = dataclasses.replace(
         task,
         name=str(args["name"]) if "name" in args else task.name,
+        parent_task_id=new_parent_task_id,
+        project_id=new_project_id,
+        inbox=new_inbox,
         flagged=bool(args["flagged"]) if "flagged" in args else task.flagged,
         note=str(args["note"]) if "note" in args else task.note,
         due=_parse_optional_date(str(args["due"])) if "due" in args else task.due,
         start=_parse_optional_date(str(args["defer"])) if "defer" in args else task.start,
         estimated_minutes=estimate_value,
-        tag_ids=(
-            tuple(str(tag_id) for tag_id in args["tag_ids"]) if "tag_ids" in args else task.tag_ids
-        ),
+        tag_ids=tag_ids,
         hidden=hidden_value,
         modified=now,
     )

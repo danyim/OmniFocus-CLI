@@ -14,7 +14,7 @@ from click.testing import CliRunner
 from omnifocus import __version__
 from omnifocus.cli import _parse_due, cli
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
-from omnifocus.models import Folder, OFModel, Project, Task
+from omnifocus.models import Folder, OFModel, Project, Tag, Task
 
 NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
 
@@ -114,6 +114,38 @@ def _make_model() -> OFModel:
         note="",
         completed=None,
     )
+    model.projects["p2"] = Project(
+        id="p2",
+        name="Operations",
+        folder_id="f1",
+        status="active",
+        singleton=False,
+        rank=200,
+        added=NOW,
+        modified=NOW,
+        flagged=False,
+        due=None,
+        start=None,
+        note="",
+        completed=None,
+    )
+    model.projects["p3"] = Project(
+        id="p3",
+        name="Dormant",
+        folder_id="f1",
+        status="inactive",
+        singleton=False,
+        rank=300,
+        added=NOW,
+        modified=NOW,
+        flagged=False,
+        due=None,
+        start=None,
+        note="",
+        completed=None,
+    )
+    model.tags["tag1"] = Tag(id="tag1", name="@home", parent_tag_id=None, rank=100)
+    model.tags["tag2"] = Tag(id="tag2", name="@desk", parent_tag_id=None, rank=200)
     model.tasks["t1"] = Task(
         id="t1",
         name="Write tests",
@@ -527,6 +559,76 @@ class TestTaskUpdateCmd:
         assert updated_task.start is None
         assert updated_task.estimated_minutes is None
         assert updated_task.tag_ids == ()
+
+    def test_task_update_assigns_project_by_id(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["task-update", "Buy milk", "--project-id", "p2"])
+        assert result.exit_code == 0
+        updated_task = mock.update_task.await_args.args[0]
+        assert updated_task.parent_task_id == "p2"
+        assert updated_task.project_id == "p2"
+        assert updated_task.inbox is False
+
+    def test_task_update_clear_project_moves_to_inbox(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["task-update", "Write tests", "--clear-project"])
+        assert result.exit_code == 0
+        updated_task = mock.update_task.await_args.args[0]
+        assert updated_task.parent_task_id is None
+        assert updated_task.project_id is None
+        assert updated_task.inbox is True
+
+    def test_task_update_inbox_moves_to_inbox(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["task-update", "Write tests", "--inbox"])
+        assert result.exit_code == 0
+        updated_task = mock.update_task.await_args.args[0]
+        assert updated_task.parent_task_id is None
+        assert updated_task.project_id is None
+        assert updated_task.inbox is True
+
+    def test_task_update_project_id_and_inbox_conflict(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli, ["task-update", "Write tests", "--project-id", "p2", "--inbox"]
+            )
+        assert result.exit_code != 0
+        assert "--project-id and --inbox cannot be combined" in result.output
+
+    def test_task_update_project_id_and_clear_project_conflict(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                ["task-update", "Write tests", "--project-id", "p2", "--clear-project"],
+            )
+        assert result.exit_code != 0
+        assert "--project-id and --clear-project cannot be combined" in result.output
+
+    def test_task_update_project_id_must_exist(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["task-update", "Write tests", "--project-id", "missing"])
+        assert result.exit_code != 0
+        assert "Project not found: missing" in result.output
+
+    def test_task_update_project_id_must_be_active(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["task-update", "Write tests", "--project-id", "p3"])
+        assert result.exit_code != 0
+        assert "Project is not active: p3" in result.output
 
     def test_task_update_webdav_error(self) -> None:
         runner = CliRunner()

@@ -158,6 +158,12 @@ class TestCreateClientStateDocument:
         monkeypatch.setenv("OF_DEVICE_NAME", "cli-host.local")
         assert default_device_name() == "cli-host.local"
 
+    def test_default_device_name_helper_uses_static_tool_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("OF_DEVICE_NAME", raising=False)
+        assert default_device_name() == "OmniFocus-CLI"
+
     def test_default_host_id_helper_uses_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OF_DEVICE_HOST_ID", "EXPLICIT-HOST-ID")
         assert default_host_id() == "EXPLICIT-HOST-ID"

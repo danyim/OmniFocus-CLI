@@ -6,7 +6,6 @@ __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
 import os
 import plistlib
-import socket
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -275,8 +274,7 @@ def default_device_name() -> str:
     explicit = os.environ.get("OF_DEVICE_NAME")
     if explicit:
         return explicit
-    hostname = socket.gethostname().split(".", 1)[0]
-    return f"{hostname}.local"
+    return "OmniFocus-CLI"
 
 
 def default_host_id() -> str:

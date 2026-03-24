@@ -95,6 +95,7 @@ log = logging.getLogger(__name__)
 
 _CACHE_FILENAME = "of_model.pkl"
 _WRITER_STATE_FILENAME = "writer_state.json"
+_WRITER_IDENTITY_FILENAME = "writer_identity.json"
 BundleFingerprint = tuple[str, tuple[str, ...], tuple[str, ...]]
 DocumentKeys = dict[int, tuple[bytes, bytes]]
 WriteStrategy = str
@@ -141,6 +142,16 @@ class _WriterState:
     bundle_fingerprint: BundleFingerprint | None
 
 
+@dataclasses.dataclass(frozen=True)
+class _WriterIdentity:
+    """Stable local sync-client identity persisted independently of tail state."""
+
+    client_id: str
+    host_id: str
+    device_name: str
+    registration_date: datetime
+
+
 class OFocusStore:
     """High-level store that syncs, decrypts, parses, and caches the OFModel.
 
@@ -162,6 +173,7 @@ class OFocusStore:
         self._cache_dir = cache_dir or _default_cache_dir()
         self._cache_path = self._cache_dir / _CACHE_FILENAME
         self._writer_state_path = self._cache_dir / _WRITER_STATE_FILENAME
+        self._writer_identity_path = self._cache_dir / _WRITER_IDENTITY_FILENAME
 
     # ------------------------------------------------------------------
     # Context manager support
@@ -617,6 +629,7 @@ class OFocusStore:
         encrypted = is_encrypted(baseline_raw)
 
         state = self._load_writer_state()
+        identity = self._load_writer_identity()
         remote_clients = await self._load_remote_client_documents(bundle_state)
         current_accepted_tail = self._current_tail_id(bundle_state, remote_clients)
         if current_accepted_tail is None:
@@ -630,6 +643,7 @@ class OFocusStore:
 
         writer_state = self._build_writer_state(
             previous_state=state,
+            identity=identity,
             template=template,
             accepted_tail=current_accepted_tail,
             encrypted=encrypted,
@@ -793,6 +807,7 @@ class OFocusStore:
         self,
         *,
         previous_state: _WriterState | None,
+        identity: _WriterIdentity | None,
         template: ClientStateDocument | None,
         accepted_tail: str,
         encrypted: bool,
@@ -828,10 +843,11 @@ class OFocusStore:
                 bundle_fingerprint=bundle_fingerprint,
             )
 
-        client_id = _configured_client_id()
+        persisted_identity = identity or self._build_writer_identity()
+        client_id = _configured_client_id(persisted_identity.client_id)
         current = datetime.now(UTC)
-        device_name = _configured_device_name()
-        host_id = _configured_host_id()
+        device_name = _configured_device_name(persisted_identity.device_name)
+        host_id = _configured_host_id(persisted_identity.host_id)
         document = create_client_state_document(
             client_identifier=client_id,
             tail_identifiers=(accepted_tail,),
@@ -839,7 +855,7 @@ class OFocusStore:
             now=current,
             device_name=device_name,
             host_id=host_id,
-            registration_date=current,
+            registration_date=persisted_identity.registration_date,
         )
         document = dataclasses.replace(
             document,
@@ -1021,6 +1037,57 @@ class OFocusStore:
         if self._cache_path.exists():
             self._cache_path.unlink()
 
+    def _build_writer_identity(self) -> _WriterIdentity:
+        """Return a new stable writer identity for this cache directory."""
+        current = datetime.now(UTC)
+        return _WriterIdentity(
+            client_id=_configured_client_id(),
+            host_id=_configured_host_id(),
+            device_name=_configured_device_name(),
+            registration_date=current,
+        )
+
+    def _load_writer_identity(self) -> _WriterIdentity | None:
+        """Return the persisted writer identity if present and valid."""
+        if not self._writer_identity_path.exists():
+            return None
+        try:
+            raw = json.loads(self._writer_identity_path.read_text())
+        except OSError, ValueError:
+            return None
+        client_id = raw.get("client_id")
+        host_id = raw.get("host_id")
+        device_name = raw.get("device_name")
+        registration_date_raw = raw.get("registration_date")
+        if (
+            not isinstance(client_id, str)
+            or not isinstance(host_id, str)
+            or not isinstance(device_name, str)
+            or not isinstance(registration_date_raw, str)
+        ):
+            return None
+        try:
+            registration_date = datetime.fromisoformat(registration_date_raw)
+        except ValueError:
+            return None
+        return _WriterIdentity(
+            client_id=client_id,
+            host_id=host_id,
+            device_name=device_name,
+            registration_date=registration_date,
+        )
+
+    def _save_writer_identity(self, identity: _WriterIdentity) -> None:
+        """Persist stable writer identity for future registrations in this cache dir."""
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "client_id": identity.client_id,
+            "host_id": identity.host_id,
+            "device_name": identity.device_name,
+            "registration_date": identity.registration_date.isoformat(),
+        }
+        self._writer_identity_path.write_text(json.dumps(payload))
+
     def _load_writer_state(self) -> _WriterState | None:
         """Return the cached writer state if present and valid."""
         if not self._writer_state_path.exists():
@@ -1125,6 +1192,14 @@ class OFocusStore:
             ),
         }
         self._writer_state_path.write_text(json.dumps(payload))
+        self._save_writer_identity(
+            _WriterIdentity(
+                client_id=state.client_id,
+                host_id=state.host_id,
+                device_name=state.device_name,
+                registration_date=state.registration_date,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------

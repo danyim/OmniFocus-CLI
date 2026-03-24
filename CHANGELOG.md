@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-03-24
+
+### Added
+
+- Support task reassignment during updates in both CLI and MCP, including moving tasks into a
+  project by `project_id`, moving them back to inbox, replacing tags, and clearing tags
+
+### Fixed
+
+- Persist sync client identity separately from transient writer state so the same cache
+  directory reuses the same OmniFocus registered client identity across restarts and repairs
+- Use a stable default sync client device name instead of the container hostname
+
 ## [1.0.5] - 2026-03-24
 
 ### Fixed
