@@ -1294,7 +1294,7 @@ class TestWritePath:
         assert result == {"status": "dropped", "folder_id": "f1", "name": "Engineering"}
         uploaded = client.put_file.await_args_list[0].args[1]
         xml = _read_contents_xml(uploaded)
-        assert '<folder id="f1">' in xml
+        assert '<folder id="f1" op="delete">' in xml
         assert "<name>" not in xml
 
     @pytest.mark.asyncio

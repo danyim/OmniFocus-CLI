@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-03-24
+
+### Fixed
+
+- Preserve folder entities across partial folder updates that omit `<name>`,
+  so valid folders no longer disappear into `Missing Folder`
+- Preserve project folder assignment across partial `<project>` updates that
+  omit `<folder>`, so projects no longer fall into `No Folder` spuriously
+- Accept explicit `op="delete"` for folder removals and stop relying on the
+  ambiguous legacy name-less folder tombstone shape
+
 ## [1.0.8] - 2026-03-24
 
 ### Added
