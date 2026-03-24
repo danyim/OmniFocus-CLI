@@ -7,6 +7,32 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-03-24
+
+### Changed
+
+- Split CI badge publishing into a separate write-scoped job while keeping the public badge URL stable
+- Normalized release metadata so package version, changelog, tags, and release assets are aligned again
+- Refreshed the local agent operating rules for the now-public repository and hardened release process
+
+### Fixed
+
+- Main branch protection readiness for required checks and signed-commit enforcement
+- Public-repo release hygiene around version drift between `pyproject.toml`, changelog entries, and release tags
+
+## [1.0.2] - 2026-03-24
+
+### Changed
+
+- Pinned GitHub Actions workflow dependencies to full commit SHAs for public-repo policy compliance
+- Improved README release badging and container release presentation
+
+### Fixed
+
+- Release workflow deprecation warnings by removing the remaining Node 20-based actions
+- Coverage badge branch publishing by configuring Git identity in the temporary checkout
+- Coverage badge workflow YAML errors discovered during release hardening
+
 ## [1.0.1] - 2026-03-24
 
 ### Added
@@ -27,9 +53,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - GitHub Actions readiness for the Node 24 transition
 - CI regressions around formatting and CLI launcher coverage discovered during release hardening
-- release workflow deprecation warnings by removing remaining Node 20-based release actions
-- badge branch publishing on first run by configuring Git identity in the temporary checkout
-- invalid YAML in the coverage badge workflow script block
 
 ## [1.0.0] - 2026-03-23
 
