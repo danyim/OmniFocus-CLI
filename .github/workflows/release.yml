@@ -28,16 +28,26 @@ jobs:
         run: |
           printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push runtime image
+      - name: Enable arm64 emulation
+        run: docker run --privileged --rm tonistiigi/binfmt --install arm64
+
+      - name: Set up multi-arch builder
+        run: |
+          docker buildx create --name omnifocus-release-builder --driver docker-container --use
+          docker buildx inspect --bootstrap
+
+      - name: Build and push multi-arch runtime image
         run: |
           image="ghcr.io/${{ github.repository_owner }}/omnifocus-cli"
           version="${GITHUB_REF_NAME}"
-          docker build --file Containerfile --target runtime \
+          docker buildx build \
+            --file Containerfile \
+            --target runtime \
+            --platform linux/amd64,linux/arm64 \
             --tag "${image}:${version}" \
             --tag "${image}:latest" \
+            --push \
             .
-          docker push "${image}:${version}"
-          docker push "${image}:latest"
 
   github-release:
     name: Create GitHub Release

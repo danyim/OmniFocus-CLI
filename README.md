@@ -52,8 +52,8 @@ podman run --rm \
 ### Inspect the CLI surface
 
 ```bash
-podman run --rm of --help
-podman run --rm of --version
+podman run --rm --pull=always of --help
+podman run --rm --pull=always of --version
 ```
 
 ## Command Model
@@ -100,6 +100,8 @@ podman run --rm -i of
 ```
 
 That is the correct shape for MCP hosts that manage a long-lived stdio subprocess.
+If you track `:latest`, prefer `podman pull` or `--pull=always` before running so a cached local
+image does not mask a newer published release.
 
 ### Claude-compatible configuration
 
@@ -153,7 +155,8 @@ The project ships as:
 - a GitHub Release with wheel and sdist artifacts
 - a GHCR runtime image published by the release workflow
 
-The runtime container is based on `python:3.14-slim` and runs as a non-root user.
+The runtime container is based on `python:3.14-slim`, runs as a non-root user, and is published
+for both `linux/amd64` and `linux/arm64`.
 PyPI publishing is intentionally out of scope for the current release process.
 
 ## Development
