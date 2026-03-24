@@ -462,6 +462,131 @@ class TestTransactionMerge:
             "weekly-review-2",
         }
 
+    def test_update_without_name_merges_into_existing_task(self) -> None:
+        base = make_zip(_BASE_XML)
+        tx = make_zip("""\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="t1" op="update">
+    <added>2026-01-01T00:00:00.000Z</added>
+    <modified>2026-01-03T00:00:00.000Z</modified>
+    <due>2026-01-05T19:00:00.000</due>
+  </task>
+</omnifocus>
+""")
+        model = build_model(base, [tx])
+        assert model.tasks["t1"].name == "Original name"
+        assert model.tasks["t1"].due is not None
+        assert model.tasks["t1"].due.isoformat() == "2026-01-05T19:00:00"
+
+    def test_app_style_task_creation_with_extra_update_remains_visible(self) -> None:
+        base = make_zip("""\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2"/>
+""")
+        txs = [
+            make_zip("""\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="new1">
+    <project/>
+    <inbox>true</inbox>
+    <task/>
+    <added>2026-01-01T00:00:00.000Z</added>
+    <name/>
+    <note/>
+    <rank>1</rank>
+    <hidden/>
+    <context/>
+    <start/>
+    <planned/>
+    <due/>
+    <completed/>
+    <estimated-minutes/>
+    <order>sequential</order>
+    <flagged>false</flagged>
+    <completed-by-children>false</completed-by-children>
+    <repetition-rule/>
+    <repetition-method/>
+    <repetition-schedule-type/>
+    <repetition-anchor-date/>
+    <catch-up-automatically>false</catch-up-automatically>
+    <next-clone-identifier>0</next-clone-identifier>
+    <due-date-alarm-policy/>
+    <defer-date-alarm-policy/>
+    <latest-time-to-start-alarm-policy/>
+    <planned-date-alarm-policy/>
+  </task>
+</omnifocus>
+"""),
+            make_zip("""\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="new1" op="update">
+    <added>2026-01-01T00:00:00.000Z</added>
+    <modified>2026-01-02T00:00:00.000Z</modified>
+    <name>Created via updates</name>
+  </task>
+</omnifocus>
+"""),
+            make_zip("""\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="new1" op="update">
+    <added>2026-01-01T00:00:00.000Z</added>
+    <modified>2026-01-03T00:00:00.000Z</modified>
+    <due>2026-01-10T19:00:00.000</due>
+  </task>
+</omnifocus>
+"""),
+        ]
+        model = build_model(base, txs)
+        assert model.tasks["new1"].name == "Created via updates"
+        assert model.tasks["new1"].due is not None
+        assert model.tasks["new1"].due.isoformat() == "2026-01-10T19:00:00"
+
+    def test_update_without_existing_entry_is_indexed(self) -> None:
+        base = make_zip("""\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2"/>
+""")
+        tx = make_zip("""\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="orphan" op="update">
+    <added>2026-01-01T00:00:00.000Z</added>
+    <modified>2026-01-01T00:00:00.000Z</modified>
+    <name>Orphan update</name>
+  </task>
+</omnifocus>
+""")
+        model = build_model(base, [tx])
+        assert model.tasks["orphan"].name == "Orphan update"
+
+    def test_delete_op_removes_task(self) -> None:
+        base = make_zip(_BASE_XML)
+        tx = make_zip("""\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="t1" op="delete">
+    <delete-snapshot/>
+  </task>
+</omnifocus>
+""")
+        model = build_model(base, [tx])
+        assert "t1" not in model.tasks
+
+    def test_empty_update_keeps_existing_task_intact(self) -> None:
+        base = make_zip(_BASE_XML)
+        tx = make_zip("""\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="t1" op="update"/>
+</omnifocus>
+""")
+        model = build_model(base, [tx])
+        assert model.tasks["t1"].name == "Original name"
+
 
 # ---------------------------------------------------------------------------
 # Edge cases
