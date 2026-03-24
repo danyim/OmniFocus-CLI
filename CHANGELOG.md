@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-03-24
+
+### Fixed
+
+- Publish GHCR runtime images as a multi-architecture manifest for both `linux/amd64` and
+  `linux/arm64`
+- Clarify in the container usage docs that `:latest` may require `podman pull` or
+  `--pull=always` when a stale local image is already cached
+
 ## [1.0.6] - 2026-03-24
 
 ### Added
