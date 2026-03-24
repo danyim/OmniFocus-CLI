@@ -531,11 +531,12 @@ class TestSyncStatus:
 
 class TestWritePath:
     @pytest.mark.asyncio
-    async def test_add_task_creates_writer_state_file(self, tmp_path: Path) -> None:
+    async def test_add_task_creates_writer_state_and_identity_files(self, tmp_path: Path) -> None:
         store, _ = _make_store(tmp_path)
         result = await store.add_task(name="New task")
         assert result["status"] == "created"
         saved = json.loads((tmp_path / "writer_state.json").read_text())
+        identity = json.loads((tmp_path / "writer_identity.json").read_text())
         assert isinstance(saved["client_id"], str)
         assert isinstance(saved["host_id"], str)
         assert len(saved["host_id"]) == 36
@@ -545,6 +546,10 @@ class TestWritePath:
         assert len(saved["tail_identifiers"]) == 1
         assert saved["hardware_model"] is None
         assert saved["encrypted"] is False
+        assert identity["client_id"] == saved["client_id"]
+        assert identity["host_id"] == saved["host_id"]
+        assert identity["device_name"] == saved["device_name"]
+        assert identity["registration_date"] == saved["registration_date"]
 
     @pytest.mark.asyncio
     async def test_reuses_same_client_id_across_writes(self, tmp_path: Path) -> None:
@@ -579,6 +584,23 @@ class TestWritePath:
         assert second_state["device_name"] == "air.local"
         assert first_state["host_id"] == "ED325E58-F612-4653-BD34-7006A7D6DD52"
         assert second_state["host_id"] == "ED325E58-F612-4653-BD34-7006A7D6DD52"
+
+    @pytest.mark.asyncio
+    async def test_reuses_identity_when_writer_state_is_missing(self, tmp_path: Path) -> None:
+        store, _ = _make_store(tmp_path)
+        await store.add_task(name="First task")
+        first_state = json.loads((tmp_path / "writer_state.json").read_text())
+
+        (tmp_path / "writer_state.json").unlink()
+
+        fresh_store, _ = _make_store(tmp_path)
+        await fresh_store.add_task(name="Second task")
+        second_state = json.loads((tmp_path / "writer_state.json").read_text())
+
+        assert second_state["client_id"] == first_state["client_id"]
+        assert second_state["host_id"] == first_state["host_id"]
+        assert second_state["device_name"] == first_state["device_name"]
+        assert second_state["registration_date"] == first_state["registration_date"]
 
     @pytest.mark.asyncio
     async def test_refreshes_tail_when_remote_listing_changes(self, tmp_path: Path) -> None:
@@ -1240,10 +1262,48 @@ class TestWritePath:
         (tmp_path / "writer_state.json").write_text("{not json")
         assert store._load_writer_state() is None  # noqa: SLF001
 
+    def test_load_writer_identity_invalid_json_returns_none(self, tmp_path: Path) -> None:
+        store, _ = _make_store(tmp_path)
+        (tmp_path / "writer_identity.json").write_text("{not json")
+        assert store._load_writer_identity() is None  # noqa: SLF001
+
     def test_load_writer_state_invalid_shape_returns_none(self, tmp_path: Path) -> None:
         store, _ = _make_store(tmp_path)
         (tmp_path / "writer_state.json").write_text(json.dumps({"client_id": 1}))
         assert store._load_writer_state() is None  # noqa: SLF001
+
+    def test_load_writer_identity_invalid_shape_returns_none(self, tmp_path: Path) -> None:
+        store, _ = _make_store(tmp_path)
+        (tmp_path / "writer_identity.json").write_text(json.dumps({"client_id": 1}))
+        assert store._load_writer_identity() is None  # noqa: SLF001
+
+    def test_load_writer_identity_with_valid_payload_returns_identity(self, tmp_path: Path) -> None:
+        store, _ = _make_store(tmp_path)
+        payload = {
+            "client_id": "abc",
+            "host_id": "host",
+            "device_name": "OmniFocus-CLI",
+            "registration_date": NOW.isoformat(),
+        }
+        (tmp_path / "writer_identity.json").write_text(json.dumps(payload))
+        identity = store._load_writer_identity()  # noqa: SLF001
+        assert identity is not None
+        assert identity.client_id == "abc"
+        assert identity.host_id == "host"
+        assert identity.device_name == "OmniFocus-CLI"
+
+    def test_load_writer_identity_invalid_registration_date_returns_none(
+        self, tmp_path: Path
+    ) -> None:
+        store, _ = _make_store(tmp_path)
+        payload = {
+            "client_id": "abc",
+            "host_id": "host",
+            "device_name": "OmniFocus-CLI",
+            "registration_date": "not-a-date",
+        }
+        (tmp_path / "writer_identity.json").write_text(json.dumps(payload))
+        assert store._load_writer_identity() is None  # noqa: SLF001
 
     def test_load_writer_state_invalid_encrypted_flag_returns_none(self, tmp_path: Path) -> None:
         store, _ = _make_store(tmp_path)
@@ -1403,7 +1463,7 @@ class TestWritePath:
 
         client.get_file = AsyncMock(side_effect=get_file)
         _, _, _, writer_state = await store._prepare_writer()  # noqa: SLF001
-        assert writer_state.device_name.endswith(".local")
+        assert writer_state.device_name == "OmniFocus-CLI"
         assert len(writer_state.host_id) == 36
         assert writer_state.hardware_model is None
         assert writer_state.os_version is None
