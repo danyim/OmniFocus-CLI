@@ -4,11 +4,13 @@ Parses the WebDAV bundle listing into baseline ZIPs, delta ZIPs, and client
 state files. Real OmniFocus 4 bundles include:
 
 - one baseline ZIP: ``00000000000000=<snapshot_id>+<tail_id>.zip``
-- zero or more delta ZIPs: ``<YYYYMMDDHHMMSS>=<new_tail_id>+<parent_tail_id>.zip``
+- zero or more delta ZIPs:
+  ``<YYYYMMDDHHMMSS>=<parent_tail_1>+...+<parent_tail_n>+<new_tail>.zip``
 - zero or more client state files: ``<YYYYMMDDHHMMSS>=<client_id>.client``
 
-The current sync head is represented by the baseline tail identifier together
-with the registered clients' ``tailIdentifiers`` values.
+The delta naming scheme is a small DAG, not a single-parent chain:
+all identifiers except the last are accepted parent tails merged by that
+transaction and the last identifier is the new tail it produces.
 """
 
 from __future__ import annotations
@@ -38,8 +40,8 @@ class DeltaRef:
 
     filename: str
     timestamp: datetime
-    head_id: str
-    parent_tail_id: str
+    tail_id: str
+    parent_tail_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -93,7 +95,7 @@ def client_id_from_filename(filename: str) -> str | None:
     """Extract the identifier stored after ``=`` and before ``+``.
 
     For baseline ZIPs this is the snapshot identifier.
-    For delta ZIPs this is the new tail identifier.
+    For delta ZIPs this is the first parent tail identifier.
     """
     stem = filename.removesuffix(".zip")
     if "=" not in stem:
@@ -105,7 +107,7 @@ def client_id_from_filename(filename: str) -> str | None:
 
 
 def parent_id_from_filename(filename: str) -> str | None:
-    """Extract the identifier stored after ``+`` in a ZIP filename."""
+    """Extract the identifier stored after ``+`` in a baseline ZIP filename."""
     stem = filename.removesuffix(".zip")
     if "=" not in stem:
         return None
@@ -114,6 +116,18 @@ def parent_id_from_filename(filename: str) -> str | None:
         return None
     parent_id = after_eq.split("+", 1)[1]
     return parent_id or None
+
+
+def delta_tail_ids_from_filename(filename: str) -> tuple[str, tuple[str, ...]] | None:
+    """Return ``(new_tail_id, parent_tail_ids)`` for a delta ZIP filename."""
+    stem = filename.removesuffix(".zip")
+    if is_baseline(filename) or not filename.endswith(".zip") or "=" not in stem:
+        return None
+    after_eq = stem.split("=", 1)[1]
+    parts = tuple(part for part in after_eq.split("+") if part)
+    if len(parts) < 2:
+        return None
+    return parts[-1], parts[:-1]
 
 
 def parse_baseline_filename(filename: str) -> BaselineRef | None:
@@ -133,15 +147,15 @@ def parse_delta_filename(filename: str) -> DeltaRef | None:
         return None
     timestamp_raw = filename.split("=", 1)[0]
     timestamp = _parse_compact_timestamp(timestamp_raw)
-    head_id = client_id_from_filename(filename)
-    parent_tail_id = parent_id_from_filename(filename)
-    if timestamp is None or head_id is None or parent_tail_id is None:
+    delta_tail_ids = delta_tail_ids_from_filename(filename)
+    if timestamp is None or delta_tail_ids is None:
         return None
+    tail_id, parent_tail_ids = delta_tail_ids
     return DeltaRef(
         filename=filename,
         timestamp=timestamp,
-        head_id=head_id,
-        parent_tail_id=parent_tail_id,
+        tail_id=tail_id,
+        parent_tail_ids=parent_tail_ids,
     )
 
 
@@ -164,8 +178,8 @@ def parse_transaction_filename(filename: str) -> TransactionRef | None:
         return None
     return TransactionRef(
         filename=delta.filename,
-        client_id=delta.head_id,
-        parent_id=delta.parent_tail_id,
+        client_id=delta.tail_id,
+        parent_id="+".join(delta.parent_tail_ids),
     )
 
 
@@ -177,8 +191,8 @@ def latest_transaction_ref(filenames: list[str]) -> TransactionRef | None:
     latest = state.deltas[-1]
     return TransactionRef(
         filename=latest.filename,
-        client_id=latest.head_id,
-        parent_id=latest.parent_tail_id,
+        client_id=latest.tail_id,
+        parent_id="+".join(latest.parent_tail_ids),
     )
 
 

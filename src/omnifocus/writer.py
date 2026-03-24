@@ -5,7 +5,7 @@ sync protocol. Each transaction ZIP contains a single ``contents.xml`` file.
 
 Delta filename format::
 
-    <YYYYMMDDHHMMSS>=<new_tail_id>+<parent_tail_id>.zip
+    <YYYYMMDDHHMMSS>=<parent_tail_id>+<new_tail_id>.zip
 
 The writer supports both single-delta operations (task/project upserts) and
 multi-delta flows for task creation that more closely match OmniFocus.app.
@@ -750,12 +750,11 @@ class TaskWriter:
         deltas: list[DeltaUpload] = []
         plan_ids = [generate_id() for _ in builders]
         for index, (builder, timestamp) in enumerate(builders):
-            if chain_shape == "linear":
+            if chain_shape in {"linear", "app_rebase"}:
                 head_id = plan_ids[index]
                 parent_tail_id = self._parent_tail_id if index == 0 else plan_ids[index - 1]
             else:
-                head_id = self._parent_tail_id if index == 0 else plan_ids[index - 1]
-                parent_tail_id = plan_ids[index]
+                raise ValueError(f"Unsupported chain shape {chain_shape!r}")
             filename, data = self._build_zip(builder, timestamp, head_id, parent_tail_id)
             deltas.append(
                 DeltaUpload(
@@ -1291,7 +1290,7 @@ class TaskWriter:
     ) -> tuple[str, bytes]:
         """Serialise *builder* content into a ZIP archive."""
         xml_bytes = builder.to_xml_bytes()
-        filename = f"{_format_ts(ts)}={head_id}+{parent_tail_id}.zip"
+        filename = f"{_format_ts(ts)}={parent_tail_id}+{head_id}.zip"
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("contents.xml", xml_bytes)

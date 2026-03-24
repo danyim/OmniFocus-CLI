@@ -11,6 +11,7 @@ from omnifocus.sync.protocol import (
     build_bundle_state,
     classify_bundle_files,
     client_id_from_filename,
+    delta_tail_ids_from_filename,
     is_baseline,
     latest_transaction_ref,
     parent_id_from_filename,
@@ -66,9 +67,17 @@ class TestFilenameParsing:
     def test_parse_delta_filename(self) -> None:
         delta = parse_delta_filename("20260322154011=head123+tail123.zip")
         assert delta is not None
-        assert delta.head_id == "head123"
-        assert delta.parent_tail_id == "tail123"
+        assert delta.tail_id == "tail123"
+        assert delta.parent_tail_ids == ("head123",)
+        multi = parse_delta_filename("20260322154011=head123+tailA+tailB.zip")
+        assert multi is not None
+        assert multi.tail_id == "tailB"
+        assert multi.parent_tail_ids == ("head123", "tailA")
         assert parse_delta_filename("bad=head123+tail123.zip") is None
+
+    def test_delta_tail_ids_from_filename_rejects_non_delta_shapes(self) -> None:
+        assert delta_tail_ids_from_filename("00000000000000=snapshot+tail.zip") is None
+        assert delta_tail_ids_from_filename("20260322154011=tailonly.zip") is None
 
     def test_parse_client_state_filename(self) -> None:
         client = parse_client_state_filename("20260322154011=client123.client")
@@ -82,8 +91,8 @@ class TestFilenameParsing:
     def test_parse_transaction_filename_returns_transaction_ref(self) -> None:
         tx = parse_transaction_filename("20260322154011=head123+tail123.zip")
         assert tx is not None
-        assert tx.client_id == "head123"
-        assert tx.parent_id == "tail123"
+        assert tx.client_id == "tail123"
+        assert tx.parent_id == "head123"
 
 
 class TestBundleState:
@@ -100,7 +109,7 @@ class TestBundleState:
         )
         assert state.baseline.snapshot_id == "snapshot123"
         assert state.current_tail_id == "tail123"
-        assert [delta.head_id for delta in state.deltas] == ["head123"]
+        assert [delta.tail_id for delta in state.deltas] == ["tail123"]
         assert [client.client_id for client in state.clients] == ["clientA", "clientB"]
         assert state.capabilities == ("active_object_hidden_dates",)
         assert state.other_entries == ("encrypted",)
@@ -114,8 +123,8 @@ class TestBundleState:
             ]
         )
         assert ref is not None
-        assert ref.client_id == "ccc"
-        assert ref.parent_id == "ddd"
+        assert ref.client_id == "ddd"
+        assert ref.parent_id == "ccc"
 
     def test_latest_transaction_ref_returns_none_when_only_baseline(self) -> None:
         assert latest_transaction_ref(["00000000000000=base+tail.zip"]) is None
