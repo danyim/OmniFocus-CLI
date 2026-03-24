@@ -34,6 +34,7 @@ WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY src/ src/
 
+RUN python -m pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir --prefix=/install -e .
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,7 @@ COPY src/ src/
 
 # Install the editable package itself (needs the src directory)
 COPY pyproject.toml README.md ./
+RUN python -m pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir --no-deps -e .
 
 # Writable cache directory for the non-root user
@@ -79,6 +81,7 @@ COPY src/ src/
 COPY tests/ tests/
 
 # Install package + dev dependencies
+RUN python -m pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -e ".[dev]"
 
 ENV PYTHONUNBUFFERED=1 \

@@ -1027,7 +1027,7 @@ class OFocusStore:
             return None
         try:
             raw = json.loads(self._writer_state_path.read_text())
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return None
         fingerprint_raw = raw.get("bundle_fingerprint")
         bundle_fingerprint: BundleFingerprint | None = None

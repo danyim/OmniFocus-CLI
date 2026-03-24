@@ -446,7 +446,7 @@ async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
         else:
             try:
                 estimate_value = int(raw_estimate)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 return _text({"error": f"Invalid estimate: {raw_estimate!r}"})
 
     hidden_value = task.hidden

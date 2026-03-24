@@ -66,6 +66,15 @@ class TestParseDue:
         result = _parse_due("fri")
         assert result.weekday() == 4  # Friday
 
+    def test_weekday_same_day_rolls_forward_one_week(self) -> None:
+        from datetime import timedelta
+
+        today = datetime.today()
+        same_day = today.strftime("%a").lower()[:3]
+        result = _parse_due(same_day)
+        expected = (today + timedelta(days=7)).date()
+        assert result.date() == expected
+
     def test_invalid_raises(self) -> None:
         import click
 
