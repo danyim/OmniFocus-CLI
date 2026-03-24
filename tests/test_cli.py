@@ -1005,6 +1005,48 @@ class TestProjectsCmd:
             result = runner.invoke(cli, ["projects", "--status", "inactive"])
         assert result.exit_code == 0
 
+    def test_projects_tree_differs_from_folders_tree(self) -> None:
+        runner = CliRunner()
+        model = _make_model()
+        model.folders["f2"] = Folder(
+            id="f2",
+            name="Engineering",
+            parent_folder_id="f1",
+            rank=150,
+            added=NOW,
+            modified=NOW,
+        )
+        model.projects["p4"] = Project(
+            id="p4",
+            name="Platform",
+            folder_id="f2",
+            status="active",
+            singleton=True,
+            rank=50,
+            added=NOW,
+            modified=NOW,
+            flagged=True,
+            due=datetime(2026, 3, 30, 19, 0, 0),
+            start=datetime(2026, 3, 28, 8, 0, 0),
+            note="",
+            completed=None,
+        )
+        mock = _mock_store(model)
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            projects_result = runner.invoke(cli, ["projects"])
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            folders_result = runner.invoke(cli, ["folders"])
+        assert projects_result.exit_code == 0
+        assert folders_result.exit_code == 0
+        assert "Projects" in projects_result.output
+        assert "Folders" in folders_result.output
+        assert "Work / Engineering" in projects_result.output
+        assert "Engineering" in folders_result.output
+        assert "(p4)" in projects_result.output
+        assert "singleton" in projects_result.output
+        assert "due 2026-03-30" in projects_result.output
+        assert "(p4)" not in folders_result.output
+
 
 class TestFolderCmds:
     def test_folders_tree(self) -> None:
@@ -1201,11 +1243,13 @@ class TestHelp:
         runner = CliRunner()
         result = runner.invoke(cli, ["projects", "--help"])
         assert result.exit_code == 0
+        assert "grouped by folder" in result.output
 
     def test_folders_help(self) -> None:
         runner = CliRunner()
         result = runner.invoke(cli, ["folders", "--help"])
         assert result.exit_code == 0
+        assert "folder hierarchy with direct child projects" in result.output
 
     def test_sync_help(self) -> None:
         runner = CliRunner()
