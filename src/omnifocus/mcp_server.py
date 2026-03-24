@@ -16,6 +16,11 @@ Tools
 ``complete_project`` Mark a project completed.
 ``list_projects``   List projects (optionally filtered by status).
 ``list_folders``    List all folders.
+``get_folder``      Retrieve a single folder by id.
+``get_folder_tree`` Return the nested folder/project tree.
+``add_folder``      Create a new folder.
+``update_folder``   Update a folder.
+``drop_folder``     Drop a folder.
 ``sync_now``        Trigger a full WebDAV sync.
 
 Usage::
@@ -62,8 +67,9 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from omnifocus.errors import OFError
+from omnifocus.formatting import build_folder_tree_data
 from omnifocus.fuzzy import find_tasks
-from omnifocus.models import OFModel, Task
+from omnifocus.models import Folder, OFModel, Task
 from omnifocus.store import OFocusStore
 
 # ---------------------------------------------------------------------------
@@ -255,12 +261,17 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="update_project",
-            description="Update a project's name, due date, defer date, flagged status, or note.",
+            description="Update a project's fields, status, or folder assignment.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string"},
                     "name": {"type": "string"},
+                    "folder_id": {"type": "string", "description": "Move project into this folder"},
+                    "clear_folder": {
+                        "type": "boolean",
+                        "description": "Remove folder assignment from the project",
+                    },
                     "due": {"type": "string", "description": "ISO 8601 datetime or empty to clear"},
                     "defer": {
                         "type": "string",
@@ -304,6 +315,55 @@ async def list_tools() -> list[Tool]:
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
+            name="get_folder",
+            description="Get a single folder by its OmniFocus ID.",
+            inputSchema={
+                "type": "object",
+                "properties": {"folder_id": {"type": "string", "description": "Folder ID"}},
+                "required": ["folder_id"],
+            },
+        ),
+        Tool(
+            name="get_folder_tree",
+            description="Return the nested folder hierarchy with direct child projects.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="add_folder",
+            description="Create a new OmniFocus folder.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "parent_folder_id": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="update_folder",
+            description="Rename or move a folder under another folder.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "folder_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "parent_folder_id": {"type": "string"},
+                    "clear_parent": {"type": "boolean"},
+                },
+                "required": ["folder_id"],
+            },
+        ),
+        Tool(
+            name="drop_folder",
+            description="Drop a folder by ID.",
+            inputSchema={
+                "type": "object",
+                "properties": {"folder_id": {"type": "string"}},
+                "required": ["folder_id"],
+            },
+        ),
+        Tool(
             name="sync_now",
             description="Trigger a full sync from the WebDAV server.",
             inputSchema={"type": "object", "properties": {}},
@@ -331,6 +391,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "complete_project": _handle_complete_project,
         "list_projects": _handle_list_projects,
         "list_folders": _handle_list_folders,
+        "get_folder": _handle_get_folder,
+        "get_folder_tree": _handle_get_folder_tree,
+        "add_folder": _handle_add_folder,
+        "update_folder": _handle_update_folder,
+        "drop_folder": _handle_drop_folder,
         "sync_now": _handle_sync_now,
     }
     handler = handlers.get(name)
@@ -592,9 +657,24 @@ async def _handle_update_project(args: dict[str, Any]) -> list[TextContent]:
     if project is None:
         return _text({"error": f"Project not found: {project_id}"})
 
+    folder_id_value = str(args["folder_id"]) if "folder_id" in args else None
+    clear_folder = bool(args.get("clear_folder", False))
+    if folder_id_value and clear_folder:
+        return _text({"error": "folder_id and clear_folder cannot be combined"})
+    if folder_id_value:
+        folder = model.folders.get(folder_id_value)
+        if folder is None:
+            return _text({"error": f"Folder not found: {folder_id_value}"})
+        new_folder_id = folder.id
+    elif clear_folder:
+        new_folder_id = None
+    else:
+        new_folder_id = project.folder_id
+
     updated = dataclasses.replace(
         project,
         name=str(args["name"]) if "name" in args else project.name,
+        folder_id=new_folder_id,
         status=str(args["status"]) if "status" in args else project.status,
         modified=datetime.now(UTC),
         flagged=bool(args["flagged"]) if "flagged" in args else project.flagged,
@@ -647,7 +727,82 @@ async def _handle_list_projects(args: dict[str, Any]) -> list[TextContent]:
 
 async def _handle_list_folders(args: dict[str, Any]) -> list[TextContent]:
     model = await _load_model()
-    return _text([dataclasses.asdict(f) for f in model.folders.values()])
+    folders = sorted(model.folders.values(), key=lambda folder: (folder.rank, folder.name.lower()))
+    return _text([dataclasses.asdict(folder) for folder in folders])
+
+
+async def _handle_get_folder(args: dict[str, Any]) -> list[TextContent]:
+    folder_id = str(args.get("folder_id", ""))
+    model = await _load_model()
+    folder = model.folders.get(folder_id)
+    if folder is None:
+        return _text({"error": f"Folder not found: {folder_id}"})
+    return _text(_folder_summary(folder, model))
+
+
+async def _handle_get_folder_tree(args: dict[str, Any]) -> list[TextContent]:
+    model = await _load_model()
+    return _text(build_folder_tree_data(model.folders, model.projects))
+
+
+async def _handle_add_folder(args: dict[str, Any]) -> list[TextContent]:
+    name = str(args.get("name", ""))
+    if not name:
+        return _text({"error": "name is required"})
+    model = await _load_model()
+    parent_folder_id = str(args["parent_folder_id"]) if "parent_folder_id" in args else None
+    if parent_folder_id is not None and parent_folder_id not in model.folders:
+        return _text({"error": f"Folder not found: {parent_folder_id}"})
+    async with OFocusStore.from_env() as store:
+        result = await store.add_folder(name=name, parent_folder_id=parent_folder_id)
+    return _text(result)
+
+
+async def _handle_update_folder(args: dict[str, Any]) -> list[TextContent]:
+    folder_id = str(args.get("folder_id", ""))
+    model = await _load_model()
+    folder = model.folders.get(folder_id)
+    if folder is None:
+        return _text({"error": f"Folder not found: {folder_id}"})
+
+    parent_folder_id = str(args["parent_folder_id"]) if "parent_folder_id" in args else None
+    clear_parent = bool(args.get("clear_parent", False))
+    validation_error = _validate_folder_parent_change(
+        model=model,
+        folder_id=folder_id,
+        parent_folder_id=parent_folder_id,
+        clear_parent=clear_parent,
+    )
+    if validation_error is not None:
+        return _text({"error": validation_error})
+
+    if parent_folder_id is not None:
+        new_parent_folder_id = parent_folder_id
+    elif clear_parent:
+        new_parent_folder_id = None
+    else:
+        new_parent_folder_id = folder.parent_folder_id
+
+    updated = dataclasses.replace(
+        folder,
+        name=str(args["name"]) if "name" in args else folder.name,
+        parent_folder_id=new_parent_folder_id,
+        modified=datetime.now(UTC),
+    )
+    async with OFocusStore.from_env() as store:
+        result = await store.update_folder(updated)
+    return _text(result)
+
+
+async def _handle_drop_folder(args: dict[str, Any]) -> list[TextContent]:
+    folder_id = str(args.get("folder_id", ""))
+    model = await _load_model()
+    folder = model.folders.get(folder_id)
+    if folder is None:
+        return _text({"error": f"Folder not found: {folder_id}"})
+    async with OFocusStore.from_env() as store:
+        result = await store.drop_folder(folder)
+    return _text(result)
 
 
 async def _handle_sync_now(args: dict[str, Any]) -> list[TextContent]:
@@ -683,6 +838,54 @@ def _task_summary(task: Task, model: OFModel) -> dict[str, Any]:
         "note": task.note,
         "tag_ids": list(task.tag_ids),
     }
+
+
+def _folder_summary(folder: Folder, model: OFModel) -> dict[str, Any]:
+    """Return a concise dict representation of a folder."""
+    child_folders = sorted(
+        (
+            candidate
+            for candidate in model.folders.values()
+            if candidate.parent_folder_id == folder.id
+        ),
+        key=lambda item: (item.rank, item.name.lower(), item.id),
+    )
+    child_projects = sorted(
+        (project for project in model.projects.values() if project.folder_id == folder.id),
+        key=lambda item: (item.rank, item.name.lower(), item.id),
+    )
+    return {
+        **dataclasses.asdict(folder),
+        "child_folder_ids": [candidate.id for candidate in child_folders],
+        "project_ids": [project.id for project in child_projects],
+    }
+
+
+def _validate_folder_parent_change(
+    *,
+    model: OFModel,
+    folder_id: str,
+    parent_folder_id: str | None,
+    clear_parent: bool,
+) -> str | None:
+    """Validate requested folder reparenting."""
+    if parent_folder_id and clear_parent:
+        return "parent_folder_id and clear_parent cannot be combined"
+    if parent_folder_id is None:
+        return None
+    if parent_folder_id not in model.folders:
+        return f"Folder not found: {parent_folder_id}"
+    if parent_folder_id == folder_id:
+        return "Folder cannot be its own parent"
+    seen: set[str] = {folder_id}
+    current_id: str | None = parent_folder_id
+    while current_id is not None:
+        if current_id in seen:
+            return "Folder move would create a cycle"
+        seen.add(current_id)
+        parent = model.folders.get(current_id)
+        current_id = None if parent is None else parent.parent_folder_id
+    return None
 
 
 # ---------------------------------------------------------------------------

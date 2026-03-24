@@ -8,11 +8,12 @@ import dataclasses
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
 from omnifocus import __version__
-from omnifocus.cli import _parse_due, cli
+from omnifocus.cli import _parse_due, _validate_folder_parent_change, cli
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
 from omnifocus.models import Folder, OFModel, Project, Tag, Task
 
@@ -87,6 +88,43 @@ class TestParseDue:
 
         with pytest.raises(click.BadParameter):
             _parse_due("9999-99-99")
+
+
+class TestValidateFolderParentChange:
+    def test_allows_no_parent_change(self) -> None:
+        _validate_folder_parent_change(
+            model=_make_model(),
+            folder_id="f1",
+            parent_folder_id=None,
+            clear_parent=False,
+        )
+
+    def test_rejects_conflicting_parent_inputs(self) -> None:
+        with pytest.raises(click.ClickException):
+            _validate_folder_parent_change(
+                model=_make_model(),
+                folder_id="f1",
+                parent_folder_id="f1",
+                clear_parent=True,
+            )
+
+    def test_rejects_missing_parent(self) -> None:
+        with pytest.raises(click.ClickException):
+            _validate_folder_parent_change(
+                model=_make_model(),
+                folder_id="f1",
+                parent_folder_id="missing",
+                clear_parent=False,
+            )
+
+    def test_rejects_self_parent(self) -> None:
+        with pytest.raises(click.ClickException):
+            _validate_folder_parent_change(
+                model=_make_model(),
+                folder_id="f1",
+                parent_folder_id="f1",
+                clear_parent=False,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +253,13 @@ def _mock_store(model: OFModel | None = None) -> MagicMock:
     m.drop_project = AsyncMock(
         return_value={"status": "dropped", "project_id": "p1", "name": "Engineering"}
     )
+    m.add_folder = AsyncMock(
+        return_value={"status": "created", "folder_id": "new-folder", "name": "Folder"}
+    )
+    m.update_folder = AsyncMock(
+        return_value={"status": "updated", "folder_id": "f1", "name": "Work"}
+    )
+    m.drop_folder = AsyncMock(return_value={"status": "dropped", "folder_id": "f1", "name": "Work"})
     m.invalidate_cache = MagicMock()
     m._client = MagicMock()
     m._client.put_file = AsyncMock(return_value=None)
@@ -756,6 +801,43 @@ class TestProjectWriteCmds:
         assert "Updated project" in result.output
         mock.update_project.assert_awaited_once()
 
+    def test_project_update_sets_folder_id(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-update", "Engineering", "--folder-id", "f1"])
+        assert result.exit_code == 0
+        updated_project = mock.update_project.await_args.args[0]
+        assert updated_project.folder_id == "f1"
+
+    def test_project_update_clears_folder(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-update", "Engineering", "--clear-folder"])
+        assert result.exit_code == 0
+        updated_project = mock.update_project.await_args.args[0]
+        assert updated_project.folder_id is None
+
+    def test_project_update_rejects_folder_conflict(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                ["project-update", "Engineering", "--folder-id", "f1", "--clear-folder"],
+            )
+        assert result.exit_code != 0
+        assert "--folder-id and --clear-folder cannot be combined" in result.output
+
+    def test_project_update_rejects_unknown_folder_id(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-update", "Engineering", "--folder-id", "missing"])
+        assert result.exit_code != 0
+        assert "Folder not found: missing" in result.output
+
     def test_project_update_clears_due_and_defer(self) -> None:
         model = _make_model()
         model.projects["p1"] = Project(
@@ -924,6 +1006,165 @@ class TestProjectsCmd:
         assert result.exit_code == 0
 
 
+class TestFolderCmds:
+    def test_folders_tree(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folders"])
+        assert result.exit_code == 0
+
+    def test_folders_json(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folders", "--format", "json"])
+        assert result.exit_code == 0
+
+    def test_folder_add(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folder-add", "Engineering", "--parent-id", "f1"])
+        assert result.exit_code == 0
+        mock.add_folder.assert_awaited_once()
+
+    def test_folder_add_rejects_unknown_parent(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folder-add", "Engineering", "--parent-id", "missing"])
+        assert result.exit_code != 0
+        assert "Folder not found: missing" in result.output
+
+    def test_folder_update_renames_and_reparents(self) -> None:
+        model = _make_model()
+        model.folders["f2"] = Folder(
+            id="f2",
+            name="Ops",
+            parent_folder_id=None,
+            rank=200,
+            added=NOW,
+            modified=NOW,
+        )
+        runner = CliRunner()
+        mock = _mock_store(model)
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                ["folder-update", "Work", "--name", "Engineering", "--parent-id", "f2"],
+            )
+        assert result.exit_code == 0
+        updated_folder = mock.update_folder.await_args.args[0]
+        assert updated_folder.name == "Engineering"
+        assert updated_folder.parent_folder_id == "f2"
+
+    def test_folder_update_rejects_cycle(self) -> None:
+        model = _make_model()
+        model.folders["f2"] = Folder(
+            id="f2",
+            name="Ops",
+            parent_folder_id="f1",
+            rank=200,
+            added=NOW,
+            modified=NOW,
+        )
+        runner = CliRunner()
+        mock = _mock_store(model)
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folder-update", "Work", "--parent-id", "f2"])
+        assert result.exit_code != 0
+        assert "cycle" in result.output
+
+    def test_folder_update_clear_parent(self) -> None:
+        model = _make_model()
+        model.folders["f1"] = dataclasses.replace(model.folders["f1"], parent_folder_id="f2")
+        model.folders["f2"] = Folder(
+            id="f2",
+            name="Ops",
+            parent_folder_id=None,
+            rank=200,
+            added=NOW,
+            modified=NOW,
+        )
+        runner = CliRunner()
+        mock = _mock_store(model)
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folder-update", "Work", "--clear-parent"])
+        assert result.exit_code == 0
+        updated_folder = mock.update_folder.await_args.args[0]
+        assert updated_folder.parent_folder_id is None
+
+    def test_folder_drop(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folder-drop", "Work", "--yes"])
+        assert result.exit_code == 0
+        mock.drop_folder.assert_awaited_once()
+
+    def test_folder_add_store_webdav_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.add_folder = AsyncMock(side_effect=OFWebDAVError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folder-add", "Engineering"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_folder_add_store_generic_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.add_folder = AsyncMock(side_effect=OFError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folder-add", "Engineering"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+    def test_folder_update_store_webdav_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.update_folder = AsyncMock(side_effect=OFWebDAVError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folder-update", "Work", "--name", "Engineering"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_folder_update_store_generic_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.update_folder = AsyncMock(side_effect=OFError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folder-update", "Work", "--name", "Engineering"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+    def test_folder_drop_confirmation_path(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folder-drop", "Work"], input="y\n")
+        assert result.exit_code == 0
+
+    def test_folder_drop_store_webdav_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.drop_folder = AsyncMock(side_effect=OFWebDAVError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folder-drop", "Work", "--yes"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_folder_drop_store_generic_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.drop_folder = AsyncMock(side_effect=OFError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["folder-drop", "Work", "--yes"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+
 class TestHelp:
     def test_main_help(self) -> None:
         runner = CliRunner()
@@ -959,6 +1200,11 @@ class TestHelp:
     def test_projects_help(self) -> None:
         runner = CliRunner()
         result = runner.invoke(cli, ["projects", "--help"])
+        assert result.exit_code == 0
+
+    def test_folders_help(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli, ["folders", "--help"])
         assert result.exit_code == 0
 
     def test_sync_help(self) -> None:

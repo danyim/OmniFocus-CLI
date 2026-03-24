@@ -9,8 +9,9 @@ import xml.etree.ElementTree as ET
 import zipfile
 from datetime import UTC, datetime
 
-from omnifocus.models import Project, Task
+from omnifocus.models import Folder, Project, Task
 from omnifocus.writer import (
+    AddFolderPlan,
     AddProjectPlan,
     AddTaskPlan,
     TaskWriter,
@@ -442,6 +443,44 @@ class TestTransactionBuilder:
         contexts = task_el.findall(f"{NS}context")
         assert [context.get("idref") for context in contexts] == ["tagA"]
 
+    def test_add_folder_element(self) -> None:
+        builder = TransactionBuilder()
+        builder.add_folder(
+            folder_id="folder1",
+            name="Engineering",
+            parent_folder_id="parent1",
+            rank=100,
+            added_dt=NOW,
+            modified_dt=NOW,
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        folder_el = root.find(f"{NS}folder")
+        assert folder_el is not None
+        assert folder_el.find(f"{NS}name").text == "Engineering"
+        assert folder_el.find(f"{NS}folder").get("idref") == "parent1"
+
+    def test_add_folder_deletion_renders_legacy_delete_marker(self) -> None:
+        builder = TransactionBuilder()
+        builder.add_folder_deletion("folder1", NOW)
+        root = _parse_transaction(builder.to_xml_bytes())
+        folder_el = root.find(f"{NS}folder")
+        assert folder_el is not None
+        assert folder_el.find(f"{NS}name") is None
+        assert folder_el.find(f"{NS}added") is not None
+
+    def test_folder_element_can_omit_optional_fields(self) -> None:
+        builder = TransactionBuilder()
+        xml = builder._folder_element(  # noqa: SLF001
+            folder_id="folder1",
+            op="update",
+            name=None,
+            parent_folder_id=None,
+            rank=None,
+            added_dt=None,
+            modified_dt=None,
+        )
+        assert xml == '<folder id="folder1" op="update"></folder>'
+
     def test_add_task_snapshot_matches_app_like_shape(self) -> None:
         builder = TransactionBuilder()
         builder.add_task_snapshot(
@@ -592,6 +631,11 @@ class TestTaskWriter:
             None,
             None,
             "proj1",
+        )
+        assert tuple(iter(AddFolderPlan(folder_id="folder1", deltas=()))) == (
+            None,
+            None,
+            "folder1",
         )
 
     def test_add_task_plan_iter_compatibility(self) -> None:
@@ -829,6 +873,59 @@ class TestTaskWriter:
         assert project_el is not None
         assert project_el.find(f"{NS}status").text == "inactive"
         assert project_el.find(f"{NS}folder").get("idref") == "folder-1"
+
+    def test_add_folder_returns_tuple(self) -> None:
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        fname, data, folder_id = writer.add_folder("Engineering")
+        assert fname.endswith(".zip")
+        assert data[:2] == b"PK"
+        assert len(folder_id) >= 10
+
+    def test_add_folder_xml_has_parent_reference(self) -> None:
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        _, data, _ = writer.add_folder(
+            "Engineering",
+            folder_id="folder-fixed",
+            parent_folder_id="parent-fixed",
+        )
+        root = ET.fromstring(_unzip_contents(data))  # noqa: S314
+        folder_el = root.find(f"{NS}folder")
+        assert folder_el is not None
+        assert folder_el.get("id") == "folder-fixed"
+        assert folder_el.find(f"{NS}folder").get("idref") == "parent-fixed"
+
+    def test_update_folder_keeps_parent_reference(self) -> None:
+        folder = Folder(
+            id="f1",
+            name="Engineering",
+            parent_folder_id="parent1",
+            rank=200,
+            added=NOW,
+            modified=NOW,
+        )
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        _, data = writer.update_folder(folder, when=NOW)
+        root = ET.fromstring(_unzip_contents(data))  # noqa: S314
+        folder_el = root.find(f"{NS}folder")
+        assert folder_el is not None
+        assert folder_el.find(f"{NS}name").text == "Engineering"
+        assert folder_el.find(f"{NS}folder").get("idref") == "parent1"
+
+    def test_drop_folder_emits_deletion_marker(self) -> None:
+        folder = Folder(
+            id="f1",
+            name="Engineering",
+            parent_folder_id=None,
+            rank=200,
+            added=NOW,
+            modified=NOW,
+        )
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        _, data = writer.drop_folder(folder)
+        root = ET.fromstring(_unzip_contents(data))  # noqa: S314
+        folder_el = root.find(f"{NS}folder")
+        assert folder_el is not None
+        assert folder_el.find(f"{NS}name") is None
 
     def test_upsert_project_keeps_project_fields(self) -> None:
         project = Project(

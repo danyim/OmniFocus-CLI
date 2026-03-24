@@ -66,7 +66,7 @@ from urllib.parse import urlsplit
 
 from omnifocus.crypto.discovery import is_encrypted
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
-from omnifocus.models import OFModel, Project, Task
+from omnifocus.models import Folder, OFModel, Project, Task
 from omnifocus.parser import build_model
 from omnifocus.sync.client_state import (
     ClientStateDocument,
@@ -519,6 +519,62 @@ class OFocusStore:
             writer_state=writer_state,
         )
         return {"status": "created", "project_id": plan.project_id, "name": name}
+
+    async def add_folder(
+        self,
+        *,
+        name: str,
+        parent_folder_id: str | None = None,
+        rank: int | None = None,
+    ) -> dict[str, str]:
+        """Create and upload a folder transaction."""
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        plan = writer.add_folder(
+            name=name,
+            parent_folder_id=parent_folder_id,
+            rank=rank,
+            write_strategy=_configured_write_strategy(),
+            chain_shape=_configured_chain_shape(),
+        )
+        await self._upload_write_plan(
+            plan,
+            encrypted_plist=encrypted_plist,
+            key_slot=key_slot,
+            writer_state=writer_state,
+        )
+        return {"status": "created", "folder_id": plan.folder_id, "name": name}
+
+    async def update_folder(self, folder: Folder) -> dict[str, str]:
+        """Upload a folder upsert transaction."""
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        plan = writer.update_folder(
+            folder,
+            write_strategy=_configured_write_strategy(),
+            chain_shape=_configured_chain_shape(),
+        )
+        await self._upload_write_plan(
+            plan,
+            encrypted_plist=encrypted_plist,
+            key_slot=key_slot,
+            writer_state=writer_state,
+        )
+        return {"status": "updated", "folder_id": folder.id, "name": folder.name}
+
+    async def drop_folder(self, folder: Folder) -> dict[str, str]:
+        """Upload a folder deletion transaction."""
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        plan = writer.drop_folder(
+            folder,
+            write_strategy=_configured_write_strategy(),
+            chain_shape=_configured_chain_shape(),
+        )
+        await self._upload_write_plan(
+            plan,
+            encrypted_plist=encrypted_plist,
+            key_slot=key_slot,
+            writer_state=writer_state,
+        )
+        return {"status": "dropped", "folder_id": folder.id, "name": folder.name}
 
     async def update_project(self, project: Project) -> dict[str, str]:
         """Upload a project upsert transaction."""

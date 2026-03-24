@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
-from omnifocus.models import OFModel, Project, Task
+from omnifocus.models import Folder, OFModel, Project, Task
 from omnifocus.store import OFocusStore, _default_cache_dir, _WriterState
 from omnifocus.sync.webdav import WebDAVClient
 from omnifocus.writer import WritePlan
@@ -100,6 +100,18 @@ def _make_project() -> Project:
         start=None,
         note="",
         completed=None,
+    )
+
+
+def _make_folder() -> Folder:
+    """Build a stable test folder."""
+    return Folder(
+        id="f1",
+        name="Engineering",
+        parent_folder_id=None,
+        rank=100,
+        added=NOW,
+        modified=NOW,
     )
 
 
@@ -1249,6 +1261,41 @@ class TestWritePath:
         assert result == {"status": "updated", "project_id": "p1", "name": "Engineering"}
         uploaded = client.put_file.await_args_list[0].args[1]
         assert "<name>Engineering</name>" in _read_contents_xml(uploaded)
+
+    @pytest.mark.asyncio
+    async def test_add_folder_uploads_folder_transaction(self, tmp_path: Path) -> None:
+        store, client = _make_store(tmp_path)
+        result = await store.add_folder(name="Engineering", parent_folder_id="parent1")
+        assert result == {
+            "status": "created",
+            "folder_id": result["folder_id"],
+            "name": "Engineering",
+        }
+        uploaded = client.put_file.await_args_list[0].args[1]
+        xml = _read_contents_xml(uploaded)
+        assert "<name>Engineering</name>" in xml
+        assert '<folder idref="parent1"/>' in xml
+
+    @pytest.mark.asyncio
+    async def test_update_folder_uploads_folder_transaction(self, tmp_path: Path) -> None:
+        store, client = _make_store(tmp_path)
+        folder = dataclasses.replace(_make_folder(), parent_folder_id="parent1")
+        result = await store.update_folder(folder)
+        assert result == {"status": "updated", "folder_id": "f1", "name": "Engineering"}
+        uploaded = client.put_file.await_args_list[0].args[1]
+        xml = _read_contents_xml(uploaded)
+        assert "<name>Engineering</name>" in xml
+        assert '<folder idref="parent1"/>' in xml
+
+    @pytest.mark.asyncio
+    async def test_drop_folder_uploads_folder_deletion_marker(self, tmp_path: Path) -> None:
+        store, client = _make_store(tmp_path)
+        result = await store.drop_folder(_make_folder())
+        assert result == {"status": "dropped", "folder_id": "f1", "name": "Engineering"}
+        uploaded = client.put_file.await_args_list[0].args[1]
+        xml = _read_contents_xml(uploaded)
+        assert '<folder id="f1">' in xml
+        assert "<name>" not in xml
 
     @pytest.mark.asyncio
     async def test_upload_transaction_rejects_missing_writable_key_slot(
