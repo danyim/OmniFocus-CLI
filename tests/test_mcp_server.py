@@ -30,7 +30,7 @@ from omnifocus.mcp_server import (
     call_tool,
     list_tools,
 )
-from omnifocus.models import Folder, OFModel, Project, Task
+from omnifocus.models import Folder, OFModel, Project, Tag, Task
 
 NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
 
@@ -65,6 +65,38 @@ def _make_model() -> OFModel:
         note="",
         completed=None,
     )
+    model.projects["p2"] = Project(
+        id="p2",
+        name="Operations",
+        folder_id="f1",
+        status="active",
+        singleton=False,
+        rank=200,
+        added=NOW,
+        modified=NOW,
+        flagged=False,
+        due=None,
+        start=None,
+        note="",
+        completed=None,
+    )
+    model.projects["p3"] = Project(
+        id="p3",
+        name="Dormant",
+        folder_id="f1",
+        status="inactive",
+        singleton=False,
+        rank=300,
+        added=NOW,
+        modified=NOW,
+        flagged=False,
+        due=None,
+        start=None,
+        note="",
+        completed=None,
+    )
+    model.tags["tag1"] = Tag(id="tag1", name="@home", parent_tag_id=None, rank=100)
+    model.tags["tag2"] = Tag(id="tag2", name="@desk", parent_tag_id=None, rank=200)
     model.tasks["t1"] = Task(
         id="t1",
         name="Write tests",
@@ -565,6 +597,124 @@ class TestHandleUpdateTask:
         updated_task = mock.update_task.await_args.args[0]
         assert updated_task.hidden is None
 
+    @pytest.mark.asyncio
+    async def test_update_project_id_moves_task_into_project(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_task({"task_id": "t2", "project_id": "p2"})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated_task = mock.update_task.await_args.args[0]
+        assert updated_task.parent_task_id == "p2"
+        assert updated_task.project_id == "p2"
+        assert updated_task.inbox is False
+
+    @pytest.mark.asyncio
+    async def test_update_clear_project_moves_task_to_inbox(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_task({"task_id": "t1", "clear_project": True})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated_task = mock.update_task.await_args.args[0]
+        assert updated_task.parent_task_id is None
+        assert updated_task.project_id is None
+        assert updated_task.inbox is True
+
+    @pytest.mark.asyncio
+    async def test_update_inbox_true_moves_task_to_inbox(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_task({"task_id": "t1", "inbox": True})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated_task = mock.update_task.await_args.args[0]
+        assert updated_task.parent_task_id is None
+        assert updated_task.project_id is None
+        assert updated_task.inbox is True
+
+    @pytest.mark.asyncio
+    async def test_update_project_id_must_exist(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_task({"task_id": "t1", "project_id": "missing"})
+        data = _parse_response(result)
+        assert data["error"] == "Project not found: missing"
+
+    @pytest.mark.asyncio
+    async def test_update_project_id_must_be_active(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_task({"task_id": "t1", "project_id": "p3"})
+        data = _parse_response(result)
+        assert data["error"] == "Project is not active: p3"
+
+    @pytest.mark.asyncio
+    async def test_update_project_id_conflicts_with_clear_project(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_task(
+                {"task_id": "t1", "project_id": "p2", "clear_project": True}
+            )
+        data = _parse_response(result)
+        assert data["error"] == "project_id and clear_project cannot be combined"
+
+    @pytest.mark.asyncio
+    async def test_update_project_id_conflicts_with_inbox(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_task({"task_id": "t1", "project_id": "p2", "inbox": True})
+        data = _parse_response(result)
+        assert data["error"] == "project_id and inbox=true cannot be combined"
+
+    @pytest.mark.asyncio
+    async def test_update_clear_project_conflicts_with_inbox_false(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_task(
+                {"task_id": "t1", "clear_project": True, "inbox": False}
+            )
+        data = _parse_response(result)
+        assert data["error"] == "clear_project cannot be combined with inbox=false"
+
+    @pytest.mark.asyncio
+    async def test_update_tag_ids_replace_tags(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_task({"task_id": "t1", "tag_ids": ["tag1", "tag2"]})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated_task = mock.update_task.await_args.args[0]
+        assert updated_task.tag_ids == ("tag1", "tag2")
+
+    @pytest.mark.asyncio
+    async def test_update_clear_tags_empties_tags(self) -> None:
+        model = _make_model()
+        model.tasks["t1"] = dataclasses.replace(model.tasks["t1"], tag_ids=("tag1",))
+        mock = _mock_store(model)
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_task({"task_id": "t1", "clear_tags": True})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated_task = mock.update_task.await_args.args[0]
+        assert updated_task.tag_ids == ()
+
+    @pytest.mark.asyncio
+    async def test_update_unknown_tag_id_returns_error(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_task({"task_id": "t1", "tag_ids": ["missing"]})
+        data = _parse_response(result)
+        assert data["error"] == "Unknown tag IDs: missing"
+
+    @pytest.mark.asyncio
+    async def test_update_clear_tags_conflicts_with_tag_ids(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_task(
+                {"task_id": "t1", "tag_ids": ["tag1"], "clear_tags": True}
+            )
+        data = _parse_response(result)
+        assert data["error"] == "tag_ids and clear_tags cannot be combined"
+
 
 # ---------------------------------------------------------------------------
 # project write tools
@@ -720,8 +870,7 @@ class TestHandleListProjects:
         with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
             result = await _handle_list_projects({})
         data = _parse_response(result)
-        assert len(data) == 1
-        assert data[0]["id"] == "p1"
+        assert {project["id"] for project in data} == {"p1", "p2"}
 
     @pytest.mark.asyncio
     async def test_all_status(self) -> None:

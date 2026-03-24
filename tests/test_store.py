@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
+import dataclasses
 import json
 import pickle
 import zipfile
@@ -1178,6 +1179,23 @@ class TestWritePath:
         assert result == {"status": "updated", "task_id": "t1", "name": "Write tests"}
         uploaded = client.put_file.await_args_list[0].args[1]
         assert "Write tests" in _read_contents_xml(uploaded)
+
+    @pytest.mark.asyncio
+    async def test_update_task_uploads_project_parent_and_tags(self, tmp_path: Path) -> None:
+        store, client = _make_store(tmp_path)
+        task = dataclasses.replace(
+            _make_task(),
+            parent_task_id="p2",
+            project_id="p2",
+            inbox=False,
+            tag_ids=("tag1", "tag2"),
+        )
+        await store.update_task(task)
+        uploaded = client.put_file.await_args_list[0].args[1]
+        xml = _read_contents_xml(uploaded)
+        assert '<task idref="p2"/>' in xml
+        assert '<context idref="tag1"/>' in xml
+        assert '<context idref="tag2"/>' in xml
 
     @pytest.mark.asyncio
     async def test_complete_task_uploads_task_transaction(self, tmp_path: Path) -> None:

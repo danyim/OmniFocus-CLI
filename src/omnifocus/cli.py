@@ -424,6 +424,9 @@ def done_cmd(query: str, yes: bool) -> None:
 @click.option("--clear-defer", is_flag=True)
 @click.option("--estimate", "estimate_minutes", default=None, type=int)
 @click.option("--clear-estimate", is_flag=True)
+@click.option("--project-id", default=None, metavar="PROJECT_ID")
+@click.option("--clear-project", is_flag=True)
+@click.option("--inbox", "move_to_inbox", is_flag=True)
 @click.option("--tag-id", "tag_ids", multiple=True)
 @click.option("--clear-tags", is_flag=True)
 def task_update_cmd(
@@ -437,6 +440,9 @@ def task_update_cmd(
     clear_defer: bool,
     estimate_minutes: int | None,
     clear_estimate: bool,
+    project_id: str | None,
+    clear_project: bool,
+    move_to_inbox: bool,
     tag_ids: tuple[str, ...],
     clear_tags: bool,
 ) -> None:
@@ -445,6 +451,29 @@ def task_update_cmd(
     async def _run_task_update() -> None:
         model = await _get_model()
         task = _match_task(model, query)
+        if project_id and clear_project:
+            raise click.ClickException("--project-id and --clear-project cannot be combined")
+        if project_id and move_to_inbox:
+            raise click.ClickException("--project-id and --inbox cannot be combined")
+
+        if project_id:
+            project = model.projects.get(project_id)
+            if project is None:
+                raise click.ClickException(f"Project not found: {project_id}")
+            if project.status != "active":
+                raise click.ClickException(f"Project is not active: {project_id}")
+            parent_task_id = project.id
+            containing_project_id = project.id
+            inbox = False
+        elif clear_project or move_to_inbox:
+            parent_task_id = None
+            containing_project_id = None
+            inbox = True
+        else:
+            parent_task_id = task.parent_task_id
+            containing_project_id = task.project_id
+            inbox = task.inbox
+
         due_dt = None if clear_due else (_parse_due(due_str) if due_str else task.due)
         defer_dt = None if clear_defer else (_parse_due(defer_str) if defer_str else task.start)
         estimated = (
@@ -456,9 +485,9 @@ def task_update_cmd(
         updated = Task(
             id=task.id,
             name=new_name or task.name,
-            parent_task_id=task.parent_task_id,
-            project_id=task.project_id,
-            inbox=task.inbox,
+            parent_task_id=parent_task_id,
+            project_id=containing_project_id,
+            inbox=inbox,
             completed=task.completed,
             flagged=task.flagged if flagged is None else flagged,
             due=due_dt,
