@@ -18,7 +18,7 @@ jobs:
     name: Quality Gate
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -51,7 +51,6 @@ jobs:
         run: pytest --cov=src/omnifocus --cov-report=json:coverage.json --cov-fail-under=100 -q
 
       - name: Generate coverage badge payload
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           python - <<'PY'
           import json
@@ -84,8 +83,31 @@ jobs:
           )
           PY
 
+      - name: Upload coverage badge artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: coverage-badge
+          path: coverage-badge.json
+
+  publish-badge:
+    name: Publish Coverage Badge
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Download coverage badge artifact
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: coverage-badge
+          path: badge
+
       - name: Publish coverage badge branch
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -107,7 +129,7 @@ jobs:
             cd "$GITHUB_WORKSPACE"
           fi
 
-          cp coverage-badge.json "$tmpdir/coverage-badge.json"
+          cp badge/coverage-badge.json "$tmpdir/coverage-badge.json"
           touch "$tmpdir/.nojekyll"
 
           cd "$tmpdir"
