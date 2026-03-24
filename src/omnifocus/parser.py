@@ -12,8 +12,11 @@ Merge semantics
 ---------------
 For every element with an ``id`` attribute in a transaction:
 
-- If the element has a ``<name>`` child  →  upsert (add or replace by id).
-- If the element has **no** ``<name>`` child  →  delete that id from the model.
+- ``op="update"`` elements merge only the changed fields into the prior snapshot.
+- ``op="delete"`` elements remove the id from the model.
+- Legacy name-less deletion markers are still accepted for task and context
+  elements, but not for folders where partial updates may legitimately omit
+  ``<name>``.
 
 Transactions are applied in lexicographic filename order, which equals
 chronological order because filenames are ISO 8601 UTC timestamps.
@@ -174,13 +177,26 @@ def _merge_update_element(existing: ET.Element, update: ET.Element) -> ET.Elemen
         if attr_name != "op":
             merged.set(attr_name, attr_value)
 
-    replacement_tags = {child.tag for child in update}
-    if replacement_tags:
-        for child in list(merged):
-            if child.tag in replacement_tags:
-                merged.remove(child)
-        for child in update:
+    merged_children: dict[str, ET.Element] = {child.tag: child for child in list(merged)}
+    for child in update:
+        existing_child = merged_children.get(child.tag)
+        if existing_child is None:
             merged.append(deepcopy(child))
+            continue
+
+        # ``<project>`` acts as a nested container whose fields are often updated
+        # partially. Replacing the whole child would drop the earlier folder link.
+        if child.tag == _tag("project"):
+            nested = _merge_update_element(existing_child, child)
+            merged.remove(existing_child)
+            merged.append(nested)
+            merged_children[child.tag] = nested
+            continue
+
+        merged.remove(existing_child)
+        cloned_child = deepcopy(child)
+        merged.append(cloned_child)
+        merged_children[child.tag] = cloned_child
     return merged
 
 
@@ -215,9 +231,10 @@ def _index_elements(root: ET.Element, index: _RawIndex) -> None:
             continue
 
         # Legacy deletion marker: element is present but has no <name> child.
-        # Applies to folder, task, context elements.
+        # Applies to task/context elements. Folder updates may legitimately
+        # omit ``<name>`` and still carry useful metadata such as parent/rank.
         has_name = elem.find(_tag("name")) is not None
-        if not has_name and local in ("task", "folder", "context"):
+        if not has_name and local in ("task", "context"):
             bucket.pop(eid, None)
         else:
             bucket[eid] = elem
@@ -304,6 +321,8 @@ def _build_project(el: ET.Element) -> Project | None:
         if raw_status:
             status = raw_status
         singleton = _bool(proj, "singleton")
+    if folder_id is None:
+        folder_id = _idref(el, "folder")
 
     tag_ids = tuple(c.get("idref", "") for c in el.findall(_tag("context")) if c.get("idref"))
 

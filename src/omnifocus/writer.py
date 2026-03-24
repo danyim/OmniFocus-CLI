@@ -658,10 +658,9 @@ class TransactionBuilder:
         )
 
     def add_folder_deletion(self, folder_id: str, deleted_dt: datetime) -> None:
-        """Add a legacy folder deletion marker."""
-        self._elements.append(
-            f'<folder id="{folder_id}">{self._leaf("added", _format_dt_utc(deleted_dt))}</folder>'
-        )
+        """Add an explicit folder deletion marker."""
+        added_xml = self._leaf("added", _format_dt_utc(deleted_dt))
+        self._elements.append(f'<folder id="{folder_id}" op="delete">{added_xml}</folder>')
 
     def add_deletion(self, task_id: str, deleted_dt: datetime) -> None:
         """Add a deletion marker for a task."""

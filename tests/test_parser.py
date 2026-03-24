@@ -372,6 +372,79 @@ _TASK_TO_PROJECT_TX_XML = """\
 </omnifocus>
 """
 
+_FOLDER_UPDATE_BASE_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <folder id="eYAcOM9PHFo">
+    <added>2026-01-01T00:00:00.000Z</added>
+    <name>Work</name>
+    <rank>1</rank>
+    <modified>2026-01-01T00:00:00.000Z</modified>
+  </folder>
+  <folder id="ptPMm-uIiPn">
+    <added>2026-01-01T00:00:00.000Z</added>
+    <name>Routines</name>
+    <rank>2</rank>
+    <modified>2026-01-01T00:00:00.000Z</modified>
+  </folder>
+  <task id="IPZIKgwH2FI">
+    <project>
+      <folder idref="eYAcOM9PHFo"/>
+      <status>active</status>
+      <singleton>false</singleton>
+    </project>
+    <inbox>false</inbox>
+    <added>2026-01-01T00:00:00.000Z</added>
+    <name>Certyfikaty 2026</name>
+    <rank>10</rank>
+    <flagged>false</flagged>
+    <completed/>
+    <modified>2026-01-01T00:00:00.000Z</modified>
+  </task>
+</omnifocus>
+"""
+
+_FOLDER_UPDATE_TX_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <folder id="eYAcOM9PHFo" op="update">
+    <modified>2026-01-02T00:00:00.000Z</modified>
+    <rank>5</rank>
+  </folder>
+  <folder id="ptPMm-uIiPn" op="update">
+    <modified>2026-01-02T00:00:00.000Z</modified>
+    <rank>6</rank>
+  </folder>
+  <task id="IPZIKgwH2FI" op="update">
+    <modified>2026-01-02T00:00:00.000Z</modified>
+    <project>
+      <status>active</status>
+      <singleton>false</singleton>
+    </project>
+  </task>
+</omnifocus>
+"""
+
+_PROJECT_DIRECT_FOLDER_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="direct-folder-project">
+    <project>
+      <status>active</status>
+      <singleton>false</singleton>
+    </project>
+    <folder idref="folder-direct"/>
+    <inbox>false</inbox>
+    <added>2026-01-01T00:00:00.000Z</added>
+    <name>Direct folder project</name>
+    <rank>1</rank>
+    <flagged>false</flagged>
+    <completed/>
+    <modified>2026-01-01T00:00:00.000Z</modified>
+  </task>
+</omnifocus>
+"""
+
 _REPEATED_NAME_XML = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
@@ -586,6 +659,21 @@ class TestTransactionMerge:
 """)
         model = build_model(base, [tx])
         assert model.tasks["t1"].name == "Original name"
+
+    def test_folder_partial_update_without_name_keeps_folder(self) -> None:
+        model = build_model(make_zip(_FOLDER_UPDATE_BASE_XML), [make_zip(_FOLDER_UPDATE_TX_XML)])
+        assert model.folders["eYAcOM9PHFo"].name == "Work"
+        assert model.folders["eYAcOM9PHFo"].rank == 5
+        assert model.folders["ptPMm-uIiPn"].name == "Routines"
+        assert model.folders["ptPMm-uIiPn"].rank == 6
+
+    def test_project_partial_update_keeps_existing_folder_assignment(self) -> None:
+        model = build_model(make_zip(_FOLDER_UPDATE_BASE_XML), [make_zip(_FOLDER_UPDATE_TX_XML)])
+        assert model.projects["IPZIKgwH2FI"].folder_id == "eYAcOM9PHFo"
+
+    def test_project_can_fall_back_to_direct_folder_reference(self) -> None:
+        model = build_model(make_zip(_PROJECT_DIRECT_FOLDER_XML))
+        assert model.projects["direct-folder-project"].folder_id == "folder-direct"
 
 
 # ---------------------------------------------------------------------------

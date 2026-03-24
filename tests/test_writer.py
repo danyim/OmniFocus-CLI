@@ -925,6 +925,7 @@ class TestTaskWriter:
         root = ET.fromstring(_unzip_contents(data))  # noqa: S314
         folder_el = root.find(f"{NS}folder")
         assert folder_el is not None
+        assert folder_el.get("op") == "delete"
         assert folder_el.find(f"{NS}name") is None
 
     def test_upsert_project_keeps_project_fields(self) -> None:
