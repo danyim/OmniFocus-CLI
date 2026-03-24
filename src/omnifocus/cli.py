@@ -35,13 +35,15 @@ from omnifocus.errors import (
     OFWebDAVError,
 )
 from omnifocus.formatting import (
+    render_folder_tree,
+    render_folders_json,
     render_project_tree,
     render_projects_json,
     render_tasks_json,
     render_tasks_table,
 )
 from omnifocus.fuzzy import find_tasks
-from omnifocus.models import OFModel, Project, Task
+from omnifocus.models import Folder, OFModel, Project, Task
 from omnifocus.store import OFocusStore
 
 _ROOT_HELP = """OmniFocus CLI for OmniFocus 4.
@@ -192,6 +194,11 @@ def _match_folder_id(model: OFModel, query: str) -> str:
     return matches[0].id
 
 
+def _match_folder(model: OFModel, query: str) -> Folder:
+    """Resolve a single folder by fuzzy substring."""
+    return model.folders[_match_folder_id(model, query)]
+
+
 def _match_task(model: OFModel, query: str) -> Task:
     """Resolve a single active task by id or fuzzy name."""
     results = find_tasks(query, model.active_tasks)
@@ -206,6 +213,32 @@ def _match_task(model: OFModel, query: str) -> Task:
             f"Ambiguous match for {query!r}. Did you mean one of:\n{choices}"
         )
     return results[0].task
+
+
+def _validate_folder_parent_change(
+    *,
+    model: OFModel,
+    folder_id: str,
+    parent_folder_id: str | None,
+    clear_parent: bool,
+) -> None:
+    """Validate requested folder reparenting."""
+    if parent_folder_id and clear_parent:
+        raise click.ClickException("--parent-id and --clear-parent cannot be combined")
+    if parent_folder_id is None:
+        return
+    if parent_folder_id not in model.folders:
+        raise click.ClickException(f"Folder not found: {parent_folder_id}")
+    if parent_folder_id == folder_id:
+        raise click.ClickException("Folder cannot be its own parent")
+    seen: set[str] = {folder_id}
+    current_id: str | None = parent_folder_id
+    while current_id is not None:
+        if current_id in seen:
+            raise click.ClickException("Folder move would create a cycle")
+        seen.add(current_id)
+        current = model.folders.get(current_id)
+        current_id = None if current is None else current.parent_folder_id
 
 
 # ---------------------------------------------------------------------------
@@ -577,6 +610,116 @@ def projects_cmd(status: str, fmt: str) -> None:
     _run(_run_projects())
 
 
+@cli.command("folders")
+@click.option(
+    "--format", "fmt", type=click.Choice(["tree", "json"]), default="tree", help="Output format."
+)
+def folders_cmd(fmt: str) -> None:
+    """Show the folder hierarchy with direct child projects."""
+
+    async def _run_folders() -> None:
+        model = await _get_model()
+        if fmt == "json":
+            render_folders_json(model.folders, model.projects)
+        else:
+            render_folder_tree(model.folders, model.projects)
+
+    _run(_run_folders())
+
+
+@cli.command("folder-add")
+@click.argument("name")
+@click.option("--parent-id", default=None, metavar="FOLDER_ID")
+def folder_add_cmd(name: str, parent_id: str | None) -> None:
+    """Add a new folder."""
+
+    async def _run_folder_add() -> None:
+        model = await _get_model()
+        if parent_id and parent_id not in model.folders:
+            raise click.ClickException(f"Folder not found: {parent_id}")
+        try:
+            async with OFocusStore.from_env() as store:
+                result = await store.add_folder(name=name, parent_folder_id=parent_id)
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Added folder: {name!r} (id={result['folder_id']})")
+
+    _run(_run_folder_add())
+
+
+@cli.command("folder-update")
+@click.argument("query")
+@click.option("--name", "new_name", default=None, metavar="NAME")
+@click.option("--parent-id", default=None, metavar="FOLDER_ID")
+@click.option("--clear-parent", is_flag=True)
+def folder_update_cmd(
+    query: str,
+    new_name: str | None,
+    parent_id: str | None,
+    clear_parent: bool,
+) -> None:
+    """Rename a folder or move it under another folder."""
+
+    async def _run_folder_update() -> None:
+        model = await _get_model()
+        folder = _match_folder(model, query)
+        _validate_folder_parent_change(
+            model=model,
+            folder_id=folder.id,
+            parent_folder_id=parent_id,
+            clear_parent=clear_parent,
+        )
+        if parent_id is not None:
+            new_parent_id = parent_id
+        elif clear_parent:
+            new_parent_id = None
+        else:
+            new_parent_id = folder.parent_folder_id
+        updated = Folder(
+            id=folder.id,
+            name=new_name or folder.name,
+            parent_folder_id=new_parent_id,
+            rank=folder.rank,
+            added=folder.added,
+            modified=datetime.now(UTC),
+        )
+        try:
+            async with OFocusStore.from_env() as store:
+                await store.update_folder(updated)
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Updated folder: {updated.name!r}")
+
+    _run(_run_folder_update())
+
+
+@cli.command("folder-drop")
+@click.argument("query")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+def folder_drop_cmd(query: str, yes: bool) -> None:
+    """Drop a folder."""
+
+    async def _run_folder_drop() -> None:
+        model = await _get_model()
+        folder = _match_folder(model, query)
+        if not yes:
+            click.confirm(f"Drop folder: {folder.name!r}?", abort=True)
+        try:
+            async with OFocusStore.from_env() as store:
+                await store.drop_folder(folder)
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Dropped folder: {folder.name!r}")
+
+    _run(_run_folder_drop())
+
+
 @cli.command("project-add")
 @click.argument("name")
 @click.option("--folder", "folder_name", default=None, metavar="NAME")
@@ -636,6 +779,8 @@ def project_add_cmd(
 @click.option("--clear-defer", is_flag=True)
 @click.option("--tag-id", "tag_ids", multiple=True)
 @click.option("--clear-tags", is_flag=True)
+@click.option("--folder-id", default=None, metavar="FOLDER_ID")
+@click.option("--clear-folder", is_flag=True)
 @click.option(
     "--status",
     type=click.Choice(["active", "inactive", "done", "dropped"]),
@@ -652,6 +797,8 @@ def project_update_cmd(
     clear_defer: bool,
     tag_ids: tuple[str, ...],
     clear_tags: bool,
+    folder_id: str | None,
+    clear_folder: bool,
     status: str | None,
 ) -> None:
     """Update an existing project."""
@@ -659,13 +806,23 @@ def project_update_cmd(
     async def _run_project_update() -> None:
         model = await _get_model()
         project = _match_project(model, query)
+        if folder_id and clear_folder:
+            raise click.ClickException("--folder-id and --clear-folder cannot be combined")
+        if folder_id:
+            if folder_id not in model.folders:
+                raise click.ClickException(f"Folder not found: {folder_id}")
+            new_folder_id = folder_id
+        elif clear_folder:
+            new_folder_id = None
+        else:
+            new_folder_id = project.folder_id
         due_dt = None if clear_due else (_parse_due(due_str) if due_str else project.due)
         defer_dt = None if clear_defer else (_parse_due(defer_str) if defer_str else project.start)
         now = datetime.now(UTC)
         updated = Project(
             id=project.id,
             name=new_name or project.name,
-            folder_id=project.folder_id,
+            folder_id=new_folder_id,
             status=status or project.status,
             singleton=project.singleton,
             rank=project.rank,

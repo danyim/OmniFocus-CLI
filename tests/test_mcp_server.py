@@ -12,21 +12,27 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from omnifocus.mcp_server import (
+    _handle_add_folder,
     _handle_add_project,
     _handle_add_task,
     _handle_complete_project,
     _handle_complete_task,
+    _handle_drop_folder,
+    _handle_get_folder,
+    _handle_get_folder_tree,
     _handle_get_task,
     _handle_list_folders,
     _handle_list_projects,
     _handle_list_tasks,
     _handle_search_tasks,
     _handle_sync_now,
+    _handle_update_folder,
     _handle_update_project,
     _handle_update_task,
     _serialise,
     _task_summary,
     _text,
+    _validate_folder_parent_change,
     call_tool,
     list_tools,
 )
@@ -177,6 +183,13 @@ def _mock_store(model: OFModel | None = None) -> MagicMock:
             "name": "Engineering",
         }
     )
+    m.add_folder = AsyncMock(
+        return_value={"status": "created", "folder_id": "new-folder", "name": "Folder"}
+    )
+    m.update_folder = AsyncMock(
+        return_value={"status": "updated", "folder_id": "f1", "name": "Work"}
+    )
+    m.drop_folder = AsyncMock(return_value={"status": "dropped", "folder_id": "f1", "name": "Work"})
     m.invalidate_cache = MagicMock()
     m._client = MagicMock()
     m._client.put_file = AsyncMock(return_value=None)
@@ -196,9 +209,9 @@ def _parse_response(contents: list) -> Any:
 
 class TestListTools:
     @pytest.mark.asyncio
-    async def test_returns_twelve_tools(self) -> None:
+    async def test_returns_seventeen_tools(self) -> None:
         tools = await list_tools()
-        assert len(tools) == 12
+        assert len(tools) == 17
 
     @pytest.mark.asyncio
     async def test_tool_names(self) -> None:
@@ -216,6 +229,11 @@ class TestListTools:
             "complete_project",
             "list_projects",
             "list_folders",
+            "get_folder",
+            "get_folder_tree",
+            "add_folder",
+            "update_folder",
+            "drop_folder",
             "sync_now",
         }
         assert names == expected
@@ -790,6 +808,44 @@ class TestHandleUpdateProject:
         mock.update_project.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_update_project_sets_folder_id(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_project({"project_id": "p1", "folder_id": "f1"})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated = mock.update_project.await_args.args[0]
+        assert updated.folder_id == "f1"
+
+    @pytest.mark.asyncio
+    async def test_update_project_clears_folder(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_project({"project_id": "p1", "clear_folder": True})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated = mock.update_project.await_args.args[0]
+        assert updated.folder_id is None
+
+    @pytest.mark.asyncio
+    async def test_update_project_rejects_folder_conflict(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_project(
+                {"project_id": "p1", "folder_id": "f1", "clear_folder": True}
+            )
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_update_project_rejects_unknown_folder(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_project({"project_id": "p1", "folder_id": "missing"})
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
     async def test_update_project_not_found(self) -> None:
         with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
             result = await _handle_update_project({"project_id": "missing"})
@@ -893,6 +949,199 @@ class TestHandleListFolders:
         data = _parse_response(result)
         assert len(data) == 1
         assert data[0]["id"] == "f1"
+
+
+class TestHandleFolderTools:
+    @pytest.mark.asyncio
+    async def test_get_folder_not_found(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_get_folder({"folder_id": "missing"})
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_get_folder_returns_summary(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_get_folder({"folder_id": "f1"})
+        data = _parse_response(result)
+        assert data["id"] == "f1"
+        assert "project_ids" in data
+
+    @pytest.mark.asyncio
+    async def test_get_folder_tree_returns_nested_data(self) -> None:
+        model = _make_model()
+        model.folders["f2"] = Folder(
+            id="f2",
+            name="Engineering Subfolder",
+            parent_folder_id="f1",
+            rank=200,
+            added=NOW,
+            modified=NOW,
+        )
+        model.projects["p1"] = dataclasses.replace(model.projects["p1"], folder_id="f2")
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            result = await _handle_get_folder_tree({})
+        data = _parse_response(result)
+        assert data["folders"][0]["children"][0]["folder"]["id"] == "f2"
+
+    @pytest.mark.asyncio
+    async def test_add_folder(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_add_folder({"name": "Engineering", "parent_folder_id": "f1"})
+        data = _parse_response(result)
+        assert data["status"] == "created"
+        mock.add_folder.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_add_folder_missing_name(self) -> None:
+        result = await _handle_add_folder({})
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_add_folder_rejects_unknown_parent(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_add_folder(
+                {"name": "Engineering", "parent_folder_id": "missing"}
+            )
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_update_folder_renames_and_reparents(self) -> None:
+        model = _make_model()
+        model.folders["f2"] = Folder(
+            id="f2",
+            name="Ops",
+            parent_folder_id=None,
+            rank=200,
+            added=NOW,
+            modified=NOW,
+        )
+        mock = _mock_store(model)
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_folder(
+                    {"folder_id": "f1", "name": "Engineering", "parent_folder_id": "f2"}
+                )
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated = mock.update_folder.await_args.args[0]
+        assert updated.name == "Engineering"
+        assert updated.parent_folder_id == "f2"
+
+    @pytest.mark.asyncio
+    async def test_update_folder_keeps_existing_parent_when_only_renaming(self) -> None:
+        model = _make_model()
+        mock = _mock_store(model)
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_folder({"folder_id": "f1", "name": "Engineering"})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated = mock.update_folder.await_args.args[0]
+        assert updated.parent_folder_id == model.folders["f1"].parent_folder_id
+
+    @pytest.mark.asyncio
+    async def test_update_folder_rejects_cycle(self) -> None:
+        model = _make_model()
+        model.folders["f2"] = Folder(
+            id="f2",
+            name="Ops",
+            parent_folder_id="f1",
+            rank=200,
+            added=NOW,
+            modified=NOW,
+        )
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            result = await _handle_update_folder({"folder_id": "f1", "parent_folder_id": "f2"})
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_update_folder_clear_parent(self) -> None:
+        model = _make_model()
+        model.folders["f1"] = dataclasses.replace(model.folders["f1"], parent_folder_id="f2")
+        model.folders["f2"] = Folder(
+            id="f2",
+            name="Ops",
+            parent_folder_id=None,
+            rank=200,
+            added=NOW,
+            modified=NOW,
+        )
+        mock = _mock_store(model)
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_folder({"folder_id": "f1", "clear_parent": True})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated = mock.update_folder.await_args.args[0]
+        assert updated.parent_folder_id is None
+
+    @pytest.mark.asyncio
+    async def test_update_folder_not_found(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_folder({"folder_id": "missing"})
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_drop_folder(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_drop_folder({"folder_id": "f1"})
+        data = _parse_response(result)
+        assert data["status"] == "dropped"
+        mock.drop_folder.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_drop_folder_not_found(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_drop_folder({"folder_id": "missing"})
+        data = _parse_response(result)
+        assert "error" in data
+
+
+class TestValidateFolderParentChange:
+    def test_conflicting_inputs(self) -> None:
+        result = _validate_folder_parent_change(
+            model=_make_model(),
+            folder_id="f1",
+            parent_folder_id="f1",
+            clear_parent=True,
+        )
+        assert result is not None
+
+    def test_none_parent_is_allowed(self) -> None:
+        result = _validate_folder_parent_change(
+            model=_make_model(),
+            folder_id="f1",
+            parent_folder_id=None,
+            clear_parent=False,
+        )
+        assert result is None
+
+    def test_missing_parent_is_rejected(self) -> None:
+        result = _validate_folder_parent_change(
+            model=_make_model(),
+            folder_id="f1",
+            parent_folder_id="missing",
+            clear_parent=False,
+        )
+        assert result is not None
+
+    def test_self_parent_is_rejected(self) -> None:
+        result = _validate_folder_parent_change(
+            model=_make_model(),
+            folder_id="f1",
+            parent_folder_id="f1",
+            clear_parent=False,
+        )
+        assert result is not None
 
 
 # ---------------------------------------------------------------------------

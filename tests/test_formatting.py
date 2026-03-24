@@ -14,6 +14,9 @@ from omnifocus.formatting import (
     _format_due,
     _project_icon,
     _project_name,
+    build_folder_tree_data,
+    render_folder_tree,
+    render_folders_json,
     render_project_tree,
     render_projects_json,
     render_tasks_json,
@@ -277,6 +280,74 @@ class TestRenderProjectTree:
         con, _ = _console()
         render_project_tree({}, {}, console=con)
         # Must not raise
+
+
+class TestFolderTreeFormatting:
+    def test_build_folder_tree_data_nests_children_and_projects(self) -> None:
+        folders = {
+            "f1": _folder("f1", "Work"),
+            "f2": Folder(
+                id="f2",
+                name="Engineering",
+                parent_folder_id="f1",
+                rank=200,
+                added=NOW,
+                modified=NOW,
+            ),
+        }
+        projects = {
+            "p1": _project("p1", "Platform", folder_id="f2"),
+            "p2": _project("p2", "Loose", folder_id=None),
+        }
+        data = build_folder_tree_data(folders, projects)
+        assert len(data["folders"]) == 1
+        assert data["folders"][0]["folder"]["name"] == "Work"
+        assert data["folders"][0]["children"][0]["folder"]["name"] == "Engineering"
+        assert data["folders"][0]["children"][0]["projects"][0]["name"] == "Platform"
+        assert data["no_folder_projects"][0]["name"] == "Loose"
+
+    def test_render_folder_tree_shows_hierarchy_and_no_folder_bucket(self) -> None:
+        con, buf = _console()
+        folders = {
+            "f1": _folder("f1", "Work"),
+            "f2": Folder(
+                id="f2",
+                name="Engineering",
+                parent_folder_id="f1",
+                rank=200,
+                added=NOW,
+                modified=NOW,
+            ),
+        }
+        projects = {
+            "p1": _project("p1", "Platform", folder_id="f2"),
+            "p2": _project("p2", "Loose", folder_id=None),
+        }
+        render_folder_tree(folders, projects, console=con)
+        output = buf.getvalue()
+        assert "Folders" in output
+        assert "Work" in output
+        assert "Engineering" in output
+        assert "Platform" in output
+        assert "No Folder" in output
+        assert "Loose" in output
+
+    def test_render_folders_json_outputs_nested_structure(self) -> None:
+        con, buf = _console()
+        folders = {"f1": _folder("f1", "Work")}
+        projects = {"p1": _project("p1", "Platform", folder_id="f1")}
+        render_folders_json(folders, projects, console=con)
+        data = json.loads(buf.getvalue())
+        assert data["folders"][0]["folder"]["id"] == "f1"
+        assert data["folders"][0]["projects"][0]["id"] == "p1"
+
+    def test_render_folder_tree_shows_projects_with_missing_folder_bucket(self) -> None:
+        con, buf = _console()
+        projects = {"p1": _project("p1", "Platform", folder_id="missing")}
+        render_folder_tree({}, projects, console=con)
+        output = buf.getvalue()
+        assert "Missing Folder" in output
+        assert "Platform" in output
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-03-24
+
+### Added
+
+- Add full folder management across CLI and MCP with `folders`, `folder-add`,
+  `folder-update`, `folder-drop`, and MCP `get_folder`, `get_folder_tree`,
+  `add_folder`, `update_folder`, and `drop_folder`
+- Add hierarchical folder tree rendering and JSON output with direct child
+  projects plus `No Folder` and missing-folder buckets
+
+### Changed
+
+- Extend project updates in CLI and MCP to support assigning projects to
+  folders and clearing folder assignment
+- Validate folder reparenting before sync writes to reject missing parents,
+  self-parenting, and cycles
+
 ## [1.0.7] - 2026-03-24
 
 ### Fixed

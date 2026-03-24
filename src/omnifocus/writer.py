@@ -22,7 +22,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from omnifocus.models import Project, Task
+from omnifocus.models import Folder, Project, Task
 
 _NS = "http://www.omnigroup.com/namespace/OmniFocus/v2"
 _APP_ID = "com.omnigroup.OmniFocus4"
@@ -93,6 +93,20 @@ class AddProjectPlan(WritePlan):
             return iter((None, None, self.project_id))
         first = self.deltas[0]
         return iter((first.filename, first.data, self.project_id))
+
+
+@dataclass(frozen=True)
+class AddFolderPlan(WritePlan):
+    """A multi-delta folder creation plan."""
+
+    folder_id: str
+
+    def __iter__(self) -> Iterator[object]:
+        """Iterate like the legacy ``(filename, data, folder_id)`` tuple API."""
+        if not self.deltas:
+            return iter((None, None, self.folder_id))
+        first = self.deltas[0]
+        return iter((first.filename, first.data, self.folder_id))
 
 
 def generate_id() -> str:
@@ -170,6 +184,32 @@ class TransactionBuilder:
         children.append(self._leaf("status", status))
         children.append(self._leaf("singleton", "true" if singleton else "false"))
         return self._el("project", children)
+
+    def _folder_element(
+        self,
+        *,
+        folder_id: str,
+        op: str | None,
+        name: str | None,
+        parent_folder_id: str | None,
+        rank: int | None,
+        added_dt: datetime | None,
+        modified_dt: datetime | None,
+    ) -> str:
+        """Render a folder XML element."""
+        children: list[str] = []
+        if parent_folder_id is not None:
+            children.append(f'<folder idref="{parent_folder_id}"/>')
+        if added_dt is not None:
+            children.append(self._leaf("added", _format_dt_utc(added_dt)))
+        if name is not None:
+            children.append(self._leaf("name", name))
+        if rank is not None:
+            children.append(self._leaf("rank", str(rank)))
+        if modified_dt is not None:
+            children.append(self._leaf("modified", _format_dt_utc(modified_dt)))
+        op_attr = f' op="{op}"' if op else ""
+        return f'<folder id="{folder_id}"{op_attr}>{"".join(children)}</folder>'
 
     def _task_element(
         self,
@@ -569,6 +609,58 @@ class TransactionBuilder:
                 tag_ids=tag_ids,
                 include_snapshot_defaults=False,
             )
+        )
+
+    def add_folder(
+        self,
+        *,
+        folder_id: str,
+        name: str,
+        parent_folder_id: str | None,
+        rank: int,
+        added_dt: datetime,
+        modified_dt: datetime,
+    ) -> None:
+        """Add a folder element to the transaction."""
+        self._elements.append(
+            self._folder_element(
+                folder_id=folder_id,
+                op=None,
+                name=name,
+                parent_folder_id=parent_folder_id,
+                rank=rank,
+                added_dt=added_dt,
+                modified_dt=modified_dt,
+            )
+        )
+
+    def update_folder(
+        self,
+        *,
+        folder_id: str,
+        name: str,
+        parent_folder_id: str | None,
+        rank: int,
+        added_dt: datetime,
+        modified_dt: datetime,
+    ) -> None:
+        """Add a folder update payload to the transaction."""
+        self._elements.append(
+            self._folder_element(
+                folder_id=folder_id,
+                op=None,
+                name=name,
+                parent_folder_id=parent_folder_id,
+                rank=rank,
+                added_dt=added_dt,
+                modified_dt=modified_dt,
+            )
+        )
+
+    def add_folder_deletion(self, folder_id: str, deleted_dt: datetime) -> None:
+        """Add a legacy folder deletion marker."""
+        self._elements.append(
+            f'<folder id="{folder_id}">{self._leaf("added", _format_dt_utc(deleted_dt))}</folder>'
         )
 
     def add_deletion(self, task_id: str, deleted_dt: datetime) -> None:
@@ -975,6 +1067,78 @@ class TaskWriter:
             chain_shape=chain_shape,
         )
         return AddProjectPlan(project_id=new_id, deltas=plan.deltas)
+
+    def add_folder(
+        self,
+        name: str,
+        *,
+        parent_folder_id: str | None = None,
+        folder_id: str | None = None,
+        rank: int | None = None,
+        write_strategy: WriteStrategy = "client_after_each_delta",
+        chain_shape: ChainShape = "app_rebase",
+    ) -> AddFolderPlan:
+        """Create a write plan that adds a new folder."""
+        now = _now_utc()
+        new_id = folder_id or generate_id()
+        folder_rank = rank if rank is not None else int(now.timestamp() * 1000) & 0x7FFFFFFF
+        builder = TransactionBuilder(context=self._context)
+        builder.add_folder(
+            folder_id=new_id,
+            name=name,
+            parent_folder_id=parent_folder_id,
+            rank=folder_rank,
+            added_dt=now,
+            modified_dt=now,
+        )
+        plan = self._build_write_plan(
+            builders=((builder, now),),
+            write_strategy=write_strategy,
+            chain_shape=chain_shape,
+        )
+        return AddFolderPlan(folder_id=new_id, deltas=plan.deltas)
+
+    def update_folder(
+        self,
+        folder: Folder,
+        *,
+        when: datetime | None = None,
+        write_strategy: WriteStrategy = "client_after_each_delta",
+        chain_shape: ChainShape = "app_rebase",
+    ) -> WritePlan:
+        """Create a write plan that upserts an existing folder."""
+        now = when or _now_utc()
+        builder = TransactionBuilder(context=self._context)
+        builder.update_folder(
+            folder_id=folder.id,
+            name=folder.name,
+            parent_folder_id=folder.parent_folder_id,
+            rank=folder.rank,
+            added_dt=folder.added,
+            modified_dt=folder.modified,
+        )
+        return self._build_write_plan(
+            builders=((builder, now),),
+            write_strategy=write_strategy,
+            chain_shape=chain_shape,
+        )
+
+    def drop_folder(
+        self,
+        folder: Folder,
+        *,
+        write_strategy: WriteStrategy = "client_after_each_delta",
+        chain_shape: ChainShape = "app_rebase",
+    ) -> WritePlan:
+        """Create a write plan that deletes a folder."""
+        now = _now_utc()
+        builder = TransactionBuilder(context=self._context)
+        builder.add_folder_deletion(folder.id, now)
+        return self._build_write_plan(
+            builders=((builder, now),),
+            write_strategy=write_strategy,
+            chain_shape=chain_shape,
+        )
 
     def update_project(
         self,
