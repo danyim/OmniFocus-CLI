@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-03-24
+
+### Fixed
+
+- CLI and container `--version` output now reads the installed package metadata instead of a stale hardcoded module constant
+- Release `v1.0.4` restores consistency between Git tag, package metadata, release assets, and runtime version reporting
+
 ## [1.0.3] - 2026-03-24
 
 ### Changed
