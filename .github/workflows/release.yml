@@ -1,0 +1,87 @@
+name: Release
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  python-artifacts:
+    name: Build Python Artifacts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install build backend
+        run: pip install build
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: python-dist
+          path: dist/*
+
+  container-image:
+    name: Publish Container Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push runtime image
+        run: |
+          image="ghcr.io/${{ github.repository_owner }}/omnifocus-cli"
+          version="${GITHUB_REF_NAME}"
+          docker build --file Containerfile --target runtime \
+            --tag "${image}:${version}" \
+            --tag "${image}:latest" \
+            .
+          docker push "${image}:${version}"
+          docker push "${image}:latest"
+
+  github-release:
+    name: Create GitHub Release
+    needs:
+      - python-artifacts
+      - container-image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Python artifacts
+        uses: actions/download-artifact@v5
+        with:
+          name: python-dist
+          path: dist
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

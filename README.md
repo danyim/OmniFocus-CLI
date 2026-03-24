@@ -1,0 +1,171 @@
+# omnifocus-cli
+
+[![CI](https://github.com/szymczag/OmniFocus-CLI/actions/workflows/ci.yml/badge.svg)](https://github.com/szymczag/OmniFocus-CLI/actions/workflows/ci.yml)
+[![Release](https://github.com/szymczag/OmniFocus-CLI/actions/workflows/release.yml/badge.svg)](https://github.com/szymczag/OmniFocus-CLI/actions/workflows/release.yml)
+[![Python](https://img.shields.io/badge/python-3.14-3776AB?logo=python&logoColor=white)](#development)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/szymczag/OmniFocus-CLI/badges/coverage-badge.json)](https://github.com/szymczag/OmniFocus-CLI/actions/workflows/ci.yml)
+[![GHCR](https://img.shields.io/badge/ghcr-container%20release-0f172a?logo=github)](#distribution)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Independent OmniFocus 4 automation with a production CLI and a container-first MCP server.
+
+`omnifocus-cli` syncs directly with an OmniFocus WebDAV endpoint, reads encrypted `.ofocus` bundles, exposes a clean `of` command-line interface, and runs as an MCP server for Claude-compatible hosts.
+
+## Why This Project
+
+- Native-feeling CLI for day-to-day task management
+- MCP server over stdio for LLM tooling and local assistants
+- Direct WebDAV sync without AppleScript or Omni Automation glue
+- Hermetic tests, strict typing, and 100% coverage enforcement
+- Podman-friendly runtime image with a non-root default user
+
+## Quick Start
+
+### Build the runtime image
+
+```bash
+podman build --target runtime -t of .
+```
+
+### Create a persistent cache
+
+```bash
+mkdir -p .of-cache
+```
+
+### Run CLI commands
+
+```bash
+podman run --rm \
+  -v "$PWD/.of-cache":/cache \
+  -e OF_CACHE_DIR=/cache \
+  -e OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/ \
+  of sync
+
+podman run --rm \
+  -v "$PWD/.of-cache":/cache \
+  -e OF_CACHE_DIR=/cache \
+  -e OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/ \
+  of tasks --inbox
+```
+
+### Inspect the CLI surface
+
+```bash
+podman run --rm of --help
+podman run --rm of --version
+```
+
+## Command Model
+
+The project exposes two native Python entrypoints:
+
+- `of` for CLI usage
+- `of-mcp` for direct MCP usage
+
+The container image ships with a launcher:
+
+- `podman run --rm of sync`
+  Runs the CLI
+- `podman run --rm of add "Task name"`
+  Runs the CLI
+- `podman run --rm -i of`
+  Starts the MCP server over stdio
+- `podman run --rm -i of mcp`
+  Starts the MCP server explicitly
+
+## CLI Usage
+
+```text
+of sync
+of tasks [--inbox] [--today] [--flagged] [--due] [--project NAME]
+of add NAME [--project NAME] [--due DATE] [--flagged] [--note TEXT]
+of done QUERY [-y]
+of task-update QUERY [options]
+of task-drop QUERY [-y]
+of projects [--status active|all|inactive] [--format tree|json]
+of project-add NAME [options]
+of project-update QUERY [options]
+of project-done QUERY [-y]
+```
+
+## MCP Integration
+
+### Container behavior
+
+The runtime image starts the MCP server when you run it without a command:
+
+```bash
+podman run --rm -i of
+```
+
+That is the correct shape for MCP hosts that manage a long-lived stdio subprocess.
+
+### Claude-compatible configuration
+
+```json
+{
+  "mcpServers": {
+    "omnifocus": {
+      "command": "podman",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "-v",
+        "/absolute/path/to/repo/.of-cache:/cache",
+        "-e",
+        "OF_CACHE_DIR=/cache",
+        "-e",
+        "OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/",
+        "of:latest"
+      ]
+    }
+  }
+}
+```
+
+If you prefer to keep credentials out of the URL, pass `OF_WEBDAV_USER`,
+`OF_WEBDAV_PASS`, and optionally `OF_ENCRYPTION_PASSPHRASE` as separate variables.
+
+### MCP deployment notes
+
+- Mount a persistent cache directory for better warm-start performance
+- Reuse a long-lived container when your MCP host supports it
+- Use `podman run --rm -i of mcp` only if you want an explicit MCP selector
+
+## Environment Variables
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `OF_WEBDAV_URL` | Yes | WebDAV bundle URL. Credentials may be embedded as `https://user:pass@host/path/`. |
+| `OF_WEBDAV_USER` | No | Explicit WebDAV username. Overrides URL-embedded credentials. |
+| `OF_WEBDAV_PASS` | No | Explicit WebDAV password. Overrides URL-embedded credentials. |
+| `OF_ENCRYPTION_PASSPHRASE` | No | Bundle decryption passphrase. Defaults to the WebDAV password. |
+| `OF_CACHE_DIR` | No | Cache directory. Defaults to a repo-local `.of-cache/` when detectable, otherwise `/tmp/of-cache`. |
+
+## Distribution
+
+The project ships as:
+
+- a Python package with `of` and `of-mcp`
+- a container image for CLI and MCP usage
+- a GitHub Release with wheel and sdist artifacts
+- a GHCR runtime image published by the release workflow
+
+The runtime container is based on `python:3.14-slim` and runs as a non-root user.
+PyPI publishing is intentionally out of scope for the current release process.
+
+## Development
+
+For local setup, quality checks, and release workflow details, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Changelog
+
+Release notes live in [CHANGELOG.md](CHANGELOG.md).
+
+## Author
+
+Maciej Szymczak  
+[maciej@szymczak.at](mailto:maciej@szymczak.at)
