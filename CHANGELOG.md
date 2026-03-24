@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-03-24
+
+### Fixed
+
+- Preserve freshly created tasks in the parsed model when later OmniFocus `op="update"`
+  deltas omit `<name>`, so MCP `get_task` and `update_task` can immediately resolve IDs
+  returned by `add_task`
+- Merge partial task updates in the parser instead of treating name-less update deltas as
+  deletion markers
+
 ## [1.0.4] - 2026-03-24
 
 ### Fixed

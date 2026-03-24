@@ -35,6 +35,7 @@ __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 import io
 import xml.etree.ElementTree as ET
 import zipfile
+from copy import deepcopy
 from datetime import UTC, datetime
 
 from omnifocus.errors import OFParseError
@@ -162,6 +163,27 @@ def _idref(el: ET.Element, local: str) -> str | None:
 _RawIndex = dict[str, dict[str, ET.Element]]
 
 
+def _merge_update_element(existing: ET.Element, update: ET.Element) -> ET.Element:
+    """Merge an ``op="update"`` element into an existing indexed element.
+
+    OmniFocus update transactions often contain only the changed fields. Replacing the
+    whole indexed element would discard unchanged fields from earlier snapshots.
+    """
+    merged = deepcopy(existing)
+    for attr_name, attr_value in update.attrib.items():
+        if attr_name != "op":
+            merged.set(attr_name, attr_value)
+
+    replacement_tags = {child.tag for child in update}
+    if replacement_tags:
+        for child in list(merged):
+            if child.tag in replacement_tags:
+                merged.remove(child)
+        for child in update:
+            merged.append(deepcopy(child))
+    return merged
+
+
 def _index_elements(root: ET.Element, index: _RawIndex) -> None:
     """Index all direct children of *root* into *index* using upsert/delete semantics.
 
@@ -178,8 +200,21 @@ def _index_elements(root: ET.Element, index: _RawIndex) -> None:
             continue
         local = elem.tag.replace(_NS, "")
         bucket = index.setdefault(local, {})
+        op = elem.get("op")
 
-        # Deletion marker: element is present but has no <name> child.
+        if op == "update":
+            existing = bucket.get(eid)
+            if existing is None:
+                bucket[eid] = elem
+            else:
+                bucket[eid] = _merge_update_element(existing, elem)
+            continue
+
+        if op == "delete":
+            bucket.pop(eid, None)
+            continue
+
+        # Legacy deletion marker: element is present but has no <name> child.
         # Applies to folder, task, context elements.
         has_name = elem.find(_tag("name")) is not None
         if not has_name and local in ("task", "folder", "context"):

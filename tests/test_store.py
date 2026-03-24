@@ -675,6 +675,35 @@ class TestWritePath:
         assert "<name>Track state</name>" in second_xml
 
     @pytest.mark.asyncio
+    async def test_add_task_with_due_is_visible_after_force_refresh(self, tmp_path: Path) -> None:
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setenv("OF_CHAIN_SHAPE", "linear")
+        store, client = _make_store(tmp_path)
+        due_dt = datetime(2026, 4, 10, 19, 0, 0)
+        result = await store.add_task(name="Visible after refresh", due_dt=due_dt)
+        monkeypatch.undo()
+
+        zip_uploads = [
+            call for call in client.put_file.await_args_list if call.args[0].endswith(".zip")
+        ]
+        uploaded_payloads = {call.args[0]: call.args[1] for call in zip_uploads}
+        client.list_entries.return_value = [
+            "00000000000000=base+tail.zip",
+            *uploaded_payloads.keys(),
+        ]
+
+        async def _get_uploaded_or_baseline(name: str) -> bytes:
+            if name in uploaded_payloads:
+                return uploaded_payloads[name]
+            return make_zip(_EMPTY_XML)
+
+        client.get_file = AsyncMock(side_effect=_get_uploaded_or_baseline)
+        model = await store.load(force_refresh=True)
+        task = model.tasks[result["task_id"]]
+        assert task.name == "Visible after refresh"
+        assert task.due == due_dt
+
+    @pytest.mark.asyncio
     async def test_add_task_chain_then_client_uploads_client_once(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
