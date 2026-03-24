@@ -90,9 +90,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           tmpdir="$(mktemp -d)"
           trap 'rm -rf "$tmpdir"' EXIT
 
@@ -114,6 +111,8 @@ jobs:
           touch "$tmpdir/.nojekyll"
 
           cd "$tmpdir"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add coverage-badge.json .nojekyll
           if git diff --cached --quiet; then
             echo "Coverage badge unchanged"
