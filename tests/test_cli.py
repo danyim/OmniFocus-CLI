@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
+from omnifocus import __version__
 from omnifocus.cli import _parse_due, cli
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
 from omnifocus.models import Folder, OFModel, Project, Task
@@ -836,7 +837,7 @@ class TestHelp:
         runner = CliRunner()
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
-        assert "of, version 1.0.0" in result.output
+        assert f"of, version {__version__}" in result.output
 
     def test_tasks_help(self) -> None:
         runner = CliRunner()

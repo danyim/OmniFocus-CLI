@@ -6,6 +6,11 @@ and exposes task management via a Click CLI and an MCP server for Claude.
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
+
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
-__version__ = "1.0.0"
+try:
+    __version__ = version("omnifocus-cli")
+except PackageNotFoundError:
+    __version__ = "0+unknown"
