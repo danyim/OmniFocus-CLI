@@ -4,7 +4,7 @@
 [![Release](https://github.com/szymczag/OmniFocus-CLI/actions/workflows/release.yml/badge.svg)](https://github.com/szymczag/OmniFocus-CLI/actions/workflows/release.yml)
 [![Python](https://img.shields.io/badge/python-3.14-3776AB?logo=python&logoColor=white)](#development)
 [![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/szymczag/OmniFocus-CLI/badges/coverage-badge.json)](https://github.com/szymczag/OmniFocus-CLI/actions/workflows/ci.yml)
-[![GHCR](https://img.shields.io/badge/ghcr-container%20release-0f172a?logo=github)](#distribution)
+[![Container](https://img.shields.io/github/v/release/szymczag/OmniFocus-CLI?label=container&logo=github)](https://github.com/szymczag/OmniFocus-CLI/pkgs/container/omnifocus-cli)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Independent OmniFocus 4 automation with a production CLI and a container-first MCP server.
