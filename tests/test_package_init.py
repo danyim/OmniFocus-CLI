@@ -24,10 +24,10 @@ def _load_init_module() -> ModuleType:
 
 def test_version_reads_package_metadata() -> None:
     """Package version should come from installed package metadata."""
-    with patch("importlib.metadata.version", return_value="1.0.5"):
+    with patch("importlib.metadata.version", return_value="1.0.6"):
         module = _load_init_module()
 
-    assert module.__version__ == "1.0.5"
+    assert module.__version__ == "1.0.6"
 
 
 def test_version_falls_back_when_metadata_missing() -> None:
