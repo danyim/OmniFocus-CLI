@@ -7,7 +7,6 @@ on:
   push:
     branches:
       - main
-      - "codex/**"
   pull_request:
   workflow_dispatch:
 
@@ -18,6 +17,8 @@ jobs:
   test:
     name: Quality Gate
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -47,21 +48,79 @@ jobs:
         run: mypy src/
 
       - name: Pytest with 100% coverage gate
-        run: pytest --cov=src/omnifocus --cov-fail-under=100 -q
+        run: pytest --cov=src/omnifocus --cov-report=json:coverage.json --cov-fail-under=100 -q
 
       - name: Generate coverage badge payload
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          cat > coverage-badge.json <<'EOF'
-          {"schemaVersion":1,"label":"coverage","message":"100%","color":"2ea44f"}
-          EOF
+        run: python - <<'PY'
+          import json
+          from pathlib import Path
 
-      - name: Upload coverage badge artifact
+          totals = json.loads(Path("coverage.json").read_text(encoding="utf-8"))["totals"]
+          percent = float(totals["percent_covered"])
+          if percent.is_integer():
+              message = f"{int(percent)}%"
+          else:
+              message = f"{percent:.2f}%"
+
+          if percent >= 100:
+              color = "2ea44f"
+          elif percent >= 90:
+              color = "dfb317"
+          else:
+              color = "e05d44"
+
+          Path("coverage-badge.json").write_text(
+              json.dumps(
+                  {
+                      "schemaVersion": 1,
+                      "label": "coverage",
+                      "message": message,
+                      "color": color,
+                  }
+              ),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Publish coverage badge branch
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-badge
-          path: coverage-badge.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+
+          if git ls-remote --exit-code --heads origin badges >/dev/null 2>&1; then
+            git clone --depth 1 --branch badges \
+              "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+              "$tmpdir"
+          else
+            git clone --depth 1 \
+              "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+              "$tmpdir"
+            cd "$tmpdir"
+            git checkout --orphan badges
+            find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+            cd "$GITHUB_WORKSPACE"
+          fi
+
+          cp coverage-badge.json "$tmpdir/coverage-badge.json"
+          touch "$tmpdir/.nojekyll"
+
+          cd "$tmpdir"
+          git add coverage-badge.json .nojekyll
+          if git diff --cached --quiet; then
+            echo "Coverage badge unchanged"
+            exit 0
+          fi
+
+          git commit -m "chore(ci): update coverage badge for ${GITHUB_SHA}"
+          git push origin HEAD:badges
 
   build-container:
     name: Build Container
@@ -71,21 +130,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Build runtime image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Containerfile
-          target: runtime
-          load: true
-          push: false
-          tags: omnifocus-cli:ci
+        run: docker build --file Containerfile --target runtime --tag omnifocus-cli:ci .
 
       - name: Smoke test CLI help
         run: docker run --rm omnifocus-cli:ci --help
