@@ -52,7 +52,8 @@ jobs:
 
       - name: Generate coverage badge payload
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: python - <<'PY'
+        run: |
+          python - <<'PY'
           import json
           from pathlib import Path
 
