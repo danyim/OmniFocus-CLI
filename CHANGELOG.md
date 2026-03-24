@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-03-24
+
 ### Added
 
 - `pip-audit` in the release-quality verification workflow
@@ -25,6 +27,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - GitHub Actions readiness for the Node 24 transition
 - CI regressions around formatting and CLI launcher coverage discovered during release hardening
+- release workflow deprecation warnings by removing remaining Node 20-based release actions
+- badge branch publishing on first run by configuring Git identity in the temporary checkout
+- invalid YAML in the coverage badge workflow script block
 
 ## [1.0.0] - 2026-03-23
 
