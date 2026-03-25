@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.12] - 2026-03-25
+
+### Added
+
+- Add first-class tag workflows across CLI and MCP, including tag create,
+  update, drop, listing, and tag-based filtering for tasks and projects
+
+### Changed
+
+- Split detailed user-facing documentation into dedicated CLI, MCP, and
+  container reference pages linked from the README
+- Keep OmniFocus tag metadata as first-class parsed and serialized model data
+  so tag round-trips no longer depend on assignment-only internals
+
 ## [1.0.11] - 2026-03-25
 
 ### Added
