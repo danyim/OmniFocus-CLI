@@ -40,6 +40,9 @@
   <task id="proj1">
     <project>
       <folder idref="folder1"/>
+      <last-review>2025-12-01T08:00:00.000Z</last-review>
+      <next-review>2026-01-01T08:00:00.000Z</next-review>
+      <review-interval>@1m</review-interval>
       <status>active</status>
       <singleton>false</singleton>
     </project>

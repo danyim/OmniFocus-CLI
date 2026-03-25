@@ -178,6 +178,12 @@ class TestBuildModel:
         assert p.folder_id is None
         assert p.status == "inactive"
 
+    def test_project_review_fields_loaded(self, sample_model: OFModel) -> None:
+        project = sample_model.projects["proj1"]
+        assert project.last_review is not None
+        assert project.next_review is not None
+        assert project.review_interval == "@1m"
+
     def test_project_completed(self, sample_model: OFModel) -> None:
         p = sample_model.projects["proj3"]
         assert p.status == "done"
@@ -841,6 +847,46 @@ class TestTransactionMerge:
     def test_project_partial_update_keeps_existing_folder_assignment(self) -> None:
         model = build_model(make_zip(_FOLDER_UPDATE_BASE_XML), [make_zip(_FOLDER_UPDATE_TX_XML)])
         assert model.projects["IPZIKgwH2FI"].folder_id == "eYAcOM9PHFo"
+
+    def test_project_partial_update_keeps_existing_review_metadata(self) -> None:
+        baseline = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="review-project">
+    <project>
+      <status>active</status>
+      <singleton>false</singleton>
+      <last-review>2026-03-01T09:00:00.000Z</last-review>
+      <next-review>2026-04-01T09:00:00.000Z</next-review>
+      <review-interval>@1m</review-interval>
+    </project>
+    <inbox>false</inbox>
+    <added>2026-03-01T09:00:00.000Z</added>
+    <name>Review me</name>
+    <note/>
+    <rank>1</rank>
+    <modified>2026-03-01T09:00:00.000Z</modified>
+  </task>
+</omnifocus>
+"""
+        update = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="review-project" op="update">
+    <project>
+      <status>inactive</status>
+    </project>
+    <added>2026-03-01T09:00:00.000Z</added>
+    <modified>2026-03-22T09:00:00.000Z</modified>
+  </task>
+</omnifocus>
+"""
+        model = build_model(make_zip(baseline), [make_zip(update)])
+        project = model.projects["review-project"]
+        assert project.status == "inactive"
+        assert project.last_review is not None
+        assert project.next_review is not None
+        assert project.review_interval == "@1m"
 
     def test_project_can_fall_back_to_direct_folder_reference(self) -> None:
         model = build_model(make_zip(_PROJECT_DIRECT_FOLDER_XML))

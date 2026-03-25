@@ -131,6 +131,9 @@ def _make_project() -> Project:
         start=None,
         note="",
         completed=None,
+        last_review=datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC),
+        next_review=datetime(2026, 4, 1, 12, 0, 0, tzinfo=UTC),
+        review_interval="@1m",
     )
 
 
@@ -1492,7 +1495,39 @@ class TestWritePath:
         result = await store.update_project(_make_project())
         assert result == {"status": "updated", "project_id": "p1", "name": "Engineering"}
         uploaded = client.put_file.await_args_list[0].args[1]
-        assert "<name>Engineering</name>" in _read_contents_xml(uploaded)
+        xml = _read_contents_xml(uploaded)
+        assert "<name>Engineering</name>" in xml
+        assert "<review-interval>@1m</review-interval>" in xml
+
+    @pytest.mark.asyncio
+    async def test_mark_project_reviewed_updates_last_review(self, tmp_path: Path) -> None:
+        store, client = _make_store(tmp_path)
+        reviewed_at = datetime(2026, 3, 25, 10, 0, 0, tzinfo=UTC)
+        result = await store.mark_project_reviewed(_make_project(), reviewed_at=reviewed_at)
+        assert result == {
+            "status": "reviewed",
+            "project_id": "p1",
+            "name": "Engineering",
+            "next_review_recalculated": True,
+        }
+        xml = _read_contents_xml(client.put_file.await_args_list[0].args[1])
+        assert "<last-review>2026-03-25T10:00:00.000Z</last-review>" in xml
+        assert "<next-review>2026-04-25T10:00:00.000Z</next-review>" in xml
+
+    @pytest.mark.asyncio
+    async def test_mark_project_reviewed_keeps_unparseable_interval(self, tmp_path: Path) -> None:
+        store, client = _make_store(tmp_path)
+        project = dataclasses.replace(_make_project(), review_interval="bogus", next_review=None)
+        result = await store.mark_project_reviewed(project, reviewed_at=NOW)
+        assert result == {
+            "status": "reviewed",
+            "project_id": "p1",
+            "name": "Engineering",
+            "next_review_recalculated": False,
+        }
+        xml = _read_contents_xml(client.put_file.await_args_list[0].args[1])
+        assert "<last-review>2026-03-22T12:00:00.000Z</last-review>" in xml
+        assert "<review-interval>bogus</review-interval>" in xml
 
     @pytest.mark.asyncio
     async def test_add_folder_uploads_folder_transaction(self, tmp_path: Path) -> None:

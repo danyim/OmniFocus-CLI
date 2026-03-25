@@ -176,11 +176,20 @@ class TransactionBuilder:
         folder_id: str | None,
         status: str,
         singleton: bool,
+        last_review: datetime | None = None,
+        next_review: datetime | None = None,
+        review_interval: str | None = None,
     ) -> str:
         """Render the nested ``<project>`` payload for project transactions."""
         children: list[str] = []
         if folder_id:
             children.append(f'<folder idref="{folder_id}"/>')
+        if last_review is not None:
+            children.append(self._leaf("last-review", _format_dt_utc(last_review)))
+        if next_review is not None:
+            children.append(self._leaf("next-review", _format_dt_utc(next_review)))
+        if review_interval is not None:
+            children.append(self._leaf("review-interval", review_interval))
         children.append(self._leaf("status", status))
         children.append(self._leaf("singleton", "true" if singleton else "false"))
         return self._el("project", children)
@@ -559,6 +568,9 @@ class TransactionBuilder:
         start_dt: datetime | None = None,
         completed_dt: datetime | None = None,
         note: str = "",
+        last_review: datetime | None = None,
+        next_review: datetime | None = None,
+        review_interval: str | None = None,
         tag_ids: tuple[str, ...] = (),
         repetition_rule: str | None = None,
         repetition_method: str | None = None,
@@ -605,6 +617,9 @@ class TransactionBuilder:
                     folder_id=folder_id,
                     status=status,
                     singleton=singleton,
+                    last_review=last_review,
+                    next_review=next_review,
+                    review_interval=review_interval,
                 ),
                 tag_ids=tag_ids,
                 include_snapshot_defaults=False,
@@ -1036,6 +1051,9 @@ class TaskWriter:
         note: str = "",
         project_id: str | None = None,
         singleton: bool = False,
+        last_review: datetime | None = None,
+        next_review: datetime | None = None,
+        review_interval: str | None = None,
         rank: int | None = None,
         write_strategy: WriteStrategy = "client_after_each_delta",
         chain_shape: ChainShape = "app_rebase",
@@ -1058,6 +1076,9 @@ class TaskWriter:
             due_dt=due_dt,
             start_dt=start_dt,
             note=note,
+            last_review=last_review,
+            next_review=next_review,
+            review_interval=review_interval,
         )
         plan = self._build_write_plan(
             builders=((builder, now),),
@@ -1163,6 +1184,9 @@ class TaskWriter:
             start_dt=project.start,
             completed_dt=project.completed,
             note=project.note,
+            last_review=project.last_review,
+            next_review=project.next_review,
+            review_interval=project.review_interval,
             tag_ids=project.tag_ids,
             repetition_rule=project.repetition_rule,
             repetition_method=project.repetition_method,
@@ -1220,6 +1244,9 @@ class TaskWriter:
             start=project.start,
             note=project.note,
             completed=now,
+            last_review=project.last_review,
+            next_review=project.next_review,
+            review_interval=project.review_interval,
             tag_ids=project.tag_ids,
             repetition_rule=project.repetition_rule,
             repetition_method=project.repetition_method,
@@ -1262,6 +1289,9 @@ class TaskWriter:
             start=project.start,
             note=project.note,
             completed=project.completed,
+            last_review=project.last_review,
+            next_review=project.next_review,
+            review_interval=project.review_interval,
             tag_ids=project.tag_ids,
             repetition_rule=project.repetition_rule,
             repetition_method=project.repetition_method,
