@@ -13,7 +13,12 @@ import pytest
 from click.testing import CliRunner
 
 from omnifocus import __version__
-from omnifocus.cli import _parse_due, _validate_folder_parent_change, cli
+from omnifocus.cli import (
+    _parse_due,
+    _validate_folder_parent_change,
+    _validate_tag_parent_change,
+    cli,
+)
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
 from omnifocus.models import Folder, OFModel, Project, Tag, Task
 
@@ -127,6 +132,43 @@ class TestValidateFolderParentChange:
             )
 
 
+class TestValidateTagParentChange:
+    def test_rejects_conflicting_parent_inputs(self) -> None:
+        with pytest.raises(click.ClickException):
+            _validate_tag_parent_change(
+                model=_make_model(),
+                tag_id="tag1",
+                parent_tag_id="tag2",
+                clear_parent=True,
+            )
+
+    def test_allows_no_parent_change(self) -> None:
+        _validate_tag_parent_change(
+            model=_make_model(),
+            tag_id="tag1",
+            parent_tag_id=None,
+            clear_parent=False,
+        )
+
+    def test_rejects_missing_parent(self) -> None:
+        with pytest.raises(click.ClickException):
+            _validate_tag_parent_change(
+                model=_make_model(),
+                tag_id="tag1",
+                parent_tag_id="missing",
+                clear_parent=False,
+            )
+
+    def test_rejects_self_parent(self) -> None:
+        with pytest.raises(click.ClickException):
+            _validate_tag_parent_change(
+                model=_make_model(),
+                tag_id="tag1",
+                parent_tag_id="tag1",
+                clear_parent=False,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -151,6 +193,7 @@ def _make_model() -> OFModel:
         start=None,
         note="",
         completed=None,
+        tag_ids=("tag1",),
     )
     model.projects["p2"] = Project(
         id="p2",
@@ -166,6 +209,7 @@ def _make_model() -> OFModel:
         start=None,
         note="",
         completed=None,
+        tag_ids=("tag2",),
     )
     model.projects["p3"] = Project(
         id="p3",
@@ -181,6 +225,7 @@ def _make_model() -> OFModel:
         start=None,
         note="",
         completed=None,
+        tag_ids=(),
     )
     model.tags["tag1"] = Tag(id="tag1", name="@home", parent_tag_id=None, rank=100)
     model.tags["tag2"] = Tag(id="tag2", name="@desk", parent_tag_id=None, rank=200)
@@ -199,6 +244,7 @@ def _make_model() -> OFModel:
         rank=100,
         repetition_rule=None,
         estimated_minutes=None,
+        tag_ids=("tag1",),
         added=NOW,
         modified=NOW,
     )
@@ -260,6 +306,9 @@ def _mock_store(model: OFModel | None = None) -> MagicMock:
         return_value={"status": "updated", "folder_id": "f1", "name": "Work"}
     )
     m.drop_folder = AsyncMock(return_value={"status": "dropped", "folder_id": "f1", "name": "Work"})
+    m.add_tag = AsyncMock(return_value={"status": "created", "tag_id": "tag3", "name": "@new"})
+    m.update_tag = AsyncMock(return_value={"status": "updated", "tag_id": "tag1", "name": "@home"})
+    m.drop_tag = AsyncMock(return_value={"status": "dropped", "tag_id": "tag1", "name": "@home"})
     m.invalidate_cache = MagicMock()
     m._client = MagicMock()
     m._client.put_file = AsyncMock(return_value=None)
@@ -348,6 +397,23 @@ class TestTasksCmd:
         with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
             result = runner.invoke(cli, ["tasks", "--project", "Engineering"])
         assert result.exit_code == 0
+
+    def test_tasks_tag_filter(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tasks", "--tag", "@home", "--format", "json"])
+        assert result.exit_code == 0
+        assert '"id": "t1"' in result.output
+        assert '"id": "t2"' not in result.output
+
+    def test_tasks_tag_filter_not_found(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tasks", "--tag", "@missing"])
+        assert result.exit_code != 0
+        assert "No tag matching" in result.output
 
     def test_tasks_all_flag(self) -> None:
         runner = CliRunner()
@@ -616,6 +682,34 @@ class TestTaskUpdateCmd:
         assert updated_task.project_id == "p2"
         assert updated_task.inbox is False
 
+    def test_task_update_rejects_unknown_tag_id(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["task-update", "Write tests", "--tag-id", "missing"])
+        assert result.exit_code != 0
+        assert "Unknown tag IDs: missing" in result.output
+
+    def test_task_update_accepts_known_tag_id(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["task-update", "Write tests", "--tag-id", "tag1"])
+        assert result.exit_code == 0
+        updated_task = mock.update_task.await_args.args[0]
+        assert updated_task.tag_ids == ("tag1",)
+
+    def test_task_update_rejects_clear_tags_conflict(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                ["task-update", "Write tests", "--tag-id", "tag1", "--clear-tags"],
+            )
+        assert result.exit_code != 0
+        assert "--tag-id and --clear-tags cannot be combined" in result.output
+
     def test_task_update_clear_project_moves_to_inbox(self) -> None:
         runner = CliRunner()
         mock = _mock_store()
@@ -867,6 +961,34 @@ class TestProjectWriteCmds:
         assert updated_project.due is None
         assert updated_project.start is None
 
+    def test_project_update_rejects_unknown_tag_id(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-update", "Engineering", "--tag-id", "missing"])
+        assert result.exit_code != 0
+        assert "Unknown tag IDs: missing" in result.output
+
+    def test_project_update_accepts_known_tag_id(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-update", "Engineering", "--tag-id", "tag2"])
+        assert result.exit_code == 0
+        updated_project = mock.update_project.await_args.args[0]
+        assert updated_project.tag_ids == ("tag2",)
+
+    def test_project_update_rejects_clear_tags_conflict(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                ["project-update", "Engineering", "--tag-id", "tag1", "--clear-tags"],
+            )
+        assert result.exit_code != 0
+        assert "--tag-id and --clear-tags cannot be combined" in result.output
+
     def test_project_update_sets_done_status(self) -> None:
         runner = CliRunner()
         mock = _mock_store()
@@ -1004,6 +1126,23 @@ class TestProjectsCmd:
         with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
             result = runner.invoke(cli, ["projects", "--status", "inactive"])
         assert result.exit_code == 0
+
+    def test_projects_tag_filter(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["projects", "--tag", "@desk", "--format", "json"])
+        assert result.exit_code == 0
+        assert '"id": "p2"' in result.output
+        assert '"id": "p1"' not in result.output
+
+    def test_projects_tag_filter_not_found(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["projects", "--tag", "@missing"])
+        assert result.exit_code != 0
+        assert "No tag matching" in result.output
 
     def test_projects_tree_differs_from_folders_tree(self) -> None:
         runner = CliRunner()
@@ -1163,6 +1302,189 @@ class TestFolderCmds:
         assert result.exit_code != 0
         assert "boom" in result.output
 
+
+class TestTagCmds:
+    def test_tags_tree(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tags"])
+        assert result.exit_code == 0
+        assert "@home" in result.output
+
+    def test_tags_json(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tags", "--format", "json"])
+        assert result.exit_code == 0
+        assert '"tag1"' in result.output
+
+    def test_tag_add(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-add", "@new", "--parent", "@home", "--note", "desk"])
+        assert result.exit_code == 0
+        mock.add_tag.assert_awaited_once()
+
+    def test_tag_add_rejects_conflicting_parent_inputs(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                ["tag-add", "@new", "--parent", "@home", "--parent-id", "tag1"],
+            )
+        assert result.exit_code != 0
+        assert "--parent and --parent-id cannot be combined" in result.output
+
+    def test_tag_add_rejects_unknown_parent_id(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-add", "@new", "--parent-id", "missing"])
+        assert result.exit_code != 0
+        assert "Tag not found: missing" in result.output
+
+    def test_tag_add_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.add_tag = AsyncMock(side_effect=OFWebDAVError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-add", "@new"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_tag_add_generic_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.add_tag = AsyncMock(side_effect=OFError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-add", "@new"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+    def test_tag_update(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-update", "@home", "--name", "@house"])
+        assert result.exit_code == 0
+        updated_tag = mock.update_tag.await_args.args[0]
+        assert updated_tag.name == "@house"
+
+    def test_tag_update_resolves_parent_query(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-update", "@desk", "--parent", "@home"])
+        assert result.exit_code == 0
+        updated_tag = mock.update_tag.await_args.args[0]
+        assert updated_tag.parent_tag_id == "tag1"
+
+    def test_tag_update_clear_parent(self) -> None:
+        model = _make_model()
+        model.tags["tag2"] = dataclasses.replace(model.tags["tag2"], parent_tag_id="tag1")
+        runner = CliRunner()
+        mock = _mock_store(model)
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-update", "@desk", "--clear-parent"])
+        assert result.exit_code == 0
+        updated_tag = mock.update_tag.await_args.args[0]
+        assert updated_tag.parent_tag_id is None
+
+    def test_tag_update_rejects_conflicting_parent_inputs(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                ["tag-update", "@home", "--parent", "@desk", "--parent-id", "tag2"],
+            )
+        assert result.exit_code != 0
+        assert "--parent and --parent-id cannot be combined" in result.output
+
+    def test_tag_update_rejects_ambiguous_tag_query(self) -> None:
+        model = _make_model()
+        model.tags["tag3"] = Tag(id="tag3", name="@home office", parent_tag_id=None, rank=300)
+        runner = CliRunner()
+        mock = _mock_store(model)
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-update", "@home", "--name", "@house"])
+        assert result.exit_code != 0
+        assert "Multiple tags match" in result.output
+
+    def test_tag_update_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.update_tag = AsyncMock(side_effect=OFError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-update", "@home", "--name", "@house"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+    def test_tag_update_webdav_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.update_tag = AsyncMock(side_effect=OFWebDAVError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-update", "@home", "--name", "@house"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_tag_drop(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-drop", "@home", "--yes"])
+        assert result.exit_code == 0
+        mock.drop_tag.assert_awaited_once()
+
+    def test_tag_drop_confirmation_path(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-drop", "@home"], input="y\n")
+        assert result.exit_code == 0
+
+    def test_tag_drop_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.drop_tag = AsyncMock(side_effect=OFWebDAVError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-drop", "@home", "--yes"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_tag_drop_generic_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.drop_tag = AsyncMock(side_effect=OFError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-drop", "@home", "--yes"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+    def test_tag_drop_not_found(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-drop", "@missing", "--yes"])
+        assert result.exit_code != 0
+        assert "No tag matching" in result.output
+
+    def test_tag_update_rejects_cycles(self) -> None:
+        model = _make_model()
+        model.tags["tag3"] = Tag(id="tag3", name="@nested", parent_tag_id="tag1", rank=300)
+        model.tags["tag1"] = dataclasses.replace(model.tags["tag1"], parent_tag_id="tag3")
+        runner = CliRunner()
+        mock = _mock_store(model)
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["tag-update", "@nested", "--parent-id", "tag1"])
+        assert result.exit_code != 0
+        assert "cycle" in result.output
+
     def test_folder_update_store_webdav_error(self) -> None:
         runner = CliRunner()
         mock = _mock_store()
@@ -1250,6 +1572,12 @@ class TestHelp:
         result = runner.invoke(cli, ["folders", "--help"])
         assert result.exit_code == 0
         assert "folder hierarchy with direct child projects" in result.output
+
+    def test_tags_help(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli, ["tags", "--help"])
+        assert result.exit_code == 0
+        assert "tag hierarchy" in result.output
 
     def test_sync_help(self) -> None:
         runner = CliRunner()

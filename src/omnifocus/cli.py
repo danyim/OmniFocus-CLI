@@ -1,17 +1,22 @@
 """Click CLI entry point for omnifocus-cli.
 
-Provides the ``of`` command group with production task and project workflows:
+Provides the ``of`` command group with production task, project, folder, and
+tag workflows:
 
 - ``of sync``      — pull the latest bundle from WebDAV
 - ``of tasks``     — list tasks with filters
 - ``of add``       — add a task
 - ``of done``      — mark a task complete
 - ``of projects``  — show projects grouped by folder
+- ``of folders``   — show the folder hierarchy
+- ``of tags``      — show the tag hierarchy
 - ``of task-update`` — update a task
 - ``of task-drop`` — drop a task
 - ``of project-add`` — add a project
 - ``of project-update`` — update a project
 - ``of project-done`` — mark a project complete
+- ``of folder-add`` / ``folder-update`` / ``folder-drop`` — manage folders
+- ``of tag-add`` / ``tag-update`` / ``tag-drop`` — manage tags
 
 All WebDAV credentials and the encryption passphrase are read from
 environment variables (see :mod:`omnifocus.store`).
@@ -39,11 +44,13 @@ from omnifocus.formatting import (
     render_folders_json,
     render_project_tree,
     render_projects_json,
+    render_tag_tree,
+    render_tags_json,
     render_tasks_json,
     render_tasks_table,
 )
 from omnifocus.fuzzy import find_tasks
-from omnifocus.models import Folder, OFModel, Project, Task
+from omnifocus.models import Folder, OFModel, Project, Tag, Task
 from omnifocus.store import OFocusStore
 
 _ROOT_HELP = """OmniFocus CLI for OmniFocus 4.
@@ -66,6 +73,8 @@ Common commands:
   of done "Write tests" --yes
   of projects --status active
   of folders
+  of tags
+  of tag-add "@home"
 
 Container usage:
   podman run --rm IMAGE sync
@@ -216,6 +225,40 @@ def _match_task(model: OFModel, query: str) -> Task:
     return results[0].task
 
 
+def _visible_tags(model: OFModel) -> dict[str, Tag]:
+    """Return visible, non-dropped tags."""
+    return {tag_id: tag for tag_id, tag in model.tags.items() if tag.hidden is None}
+
+
+def _matching_tag_ids(
+    model: OFModel,
+    query: str,
+    *,
+    include_hidden: bool = False,
+) -> set[str]:
+    """Return all matching tag ids for a fuzzy substring query."""
+    haystack = model.tags if include_hidden else _visible_tags(model)
+    needle = query.lower()
+    return {tag.id for tag in haystack.values() if needle in tag.name.lower()}
+
+
+def _match_tag_id(model: OFModel, query: str, *, include_hidden: bool = False) -> str:
+    """Resolve a tag id by fuzzy substring."""
+    haystack = model.tags if include_hidden else _visible_tags(model)
+    matches = [tag for tag in haystack.values() if query.lower() in tag.name.lower()]
+    if not matches:
+        raise click.ClickException(f"No tag matching {query!r}")
+    if len(matches) > 1:
+        names = ", ".join(match.name for match in matches[:5])
+        raise click.ClickException(f"Multiple tags match {query!r}: {names}. Be more specific.")
+    return matches[0].id
+
+
+def _match_tag(model: OFModel, query: str, *, include_hidden: bool = False) -> Tag:
+    """Resolve a single tag by fuzzy substring."""
+    return model.tags[_match_tag_id(model, query, include_hidden=include_hidden)]
+
+
 def _validate_folder_parent_change(
     *,
     model: OFModel,
@@ -240,6 +283,32 @@ def _validate_folder_parent_change(
         seen.add(current_id)
         current = model.folders.get(current_id)
         current_id = None if current is None else current.parent_folder_id
+
+
+def _validate_tag_parent_change(
+    *,
+    model: OFModel,
+    tag_id: str,
+    parent_tag_id: str | None,
+    clear_parent: bool,
+) -> None:
+    """Validate requested tag reparenting."""
+    if parent_tag_id and clear_parent:
+        raise click.ClickException("--parent-id and --clear-parent cannot be combined")
+    if parent_tag_id is None:
+        return
+    if parent_tag_id not in model.tags:
+        raise click.ClickException(f"Tag not found: {parent_tag_id}")
+    if parent_tag_id == tag_id:
+        raise click.ClickException("Tag cannot be its own parent")
+    seen: set[str] = {tag_id}
+    current_id: str | None = parent_tag_id
+    while current_id is not None:
+        if current_id in seen:
+            raise click.ClickException("Tag move would create a cycle")
+        seen.add(current_id)
+        current = model.tags.get(current_id)
+        current_id = None if current is None else current.parent_tag_id
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +366,13 @@ def sync_cmd() -> None:
     help="Filter by project name (substring, case-insensitive).",
 )
 @click.option(
+    "--tag",
+    "tag_name",
+    default=None,
+    metavar="NAME",
+    help="Filter by tag name (substring, case-insensitive).",
+)
+@click.option(
     "--format", "fmt", type=click.Choice(["table", "json"]), default="table", help="Output format."
 )
 @click.option("--all", "show_all", is_flag=True, help="Include completed tasks.")
@@ -306,6 +382,7 @@ def tasks_cmd(
     flagged: bool,
     due_only: bool,
     project_name: str | None,
+    tag_name: str | None,
     fmt: str,
     show_all: bool,
 ) -> None:
@@ -334,6 +411,12 @@ def tasks_cmd(
                 pid for pid, p in model.projects.items() if needle in p.name.lower()
             }
             tasks = [t for t in tasks if t.project_id in matching_proj_ids]
+
+        if tag_name:
+            matching_tag_ids = _matching_tag_ids(model, tag_name)
+            if not matching_tag_ids:
+                raise click.ClickException(f"No tag matching {tag_name!r}")
+            tasks = [task for task in tasks if matching_tag_ids.intersection(task.tag_ids)]
 
         if fmt == "json":
             render_tasks_json(tasks)
@@ -489,6 +572,8 @@ def task_update_cmd(
             raise click.ClickException("--project-id and --clear-project cannot be combined")
         if project_id and move_to_inbox:
             raise click.ClickException("--project-id and --inbox cannot be combined")
+        if clear_tags and tag_ids:
+            raise click.ClickException("--tag-id and --clear-tags cannot be combined")
 
         if project_id:
             project = model.projects.get(project_id)
@@ -507,6 +592,11 @@ def task_update_cmd(
             parent_task_id = task.parent_task_id
             containing_project_id = task.project_id
             inbox = task.inbox
+        if tag_ids:
+            missing_tag_ids = [tag_id for tag_id in tag_ids if tag_id not in model.tags]
+            if missing_tag_ids:
+                joined = ", ".join(missing_tag_ids)
+                raise click.ClickException(f"Unknown tag IDs: {joined}")
 
         due_dt = None if clear_due else (_parse_due(due_str) if due_str else task.due)
         defer_dt = None if clear_defer else (_parse_due(defer_str) if defer_str else task.start)
@@ -596,17 +686,38 @@ def task_drop_cmd(query: str, yes: bool) -> None:
     help="Filter by project status.",
 )
 @click.option(
+    "--tag",
+    "tag_name",
+    default=None,
+    metavar="NAME",
+    help="Filter by tag name (substring, case-insensitive).",
+)
+@click.option(
     "--format", "fmt", type=click.Choice(["tree", "json"]), default="tree", help="Output format."
 )
-def projects_cmd(status: str, fmt: str) -> None:
+def projects_cmd(status: str, tag_name: str | None, fmt: str) -> None:
     """Show projects grouped by folder with project details."""
 
     async def _run_projects() -> None:
         model = await _get_model()
+        filtered_projects = {
+            project.id: project
+            for project in model.projects.values()
+            if status == "all" or project.status == status
+        }
+        if tag_name:
+            matching_tag_ids = _matching_tag_ids(model, tag_name)
+            if not matching_tag_ids:
+                raise click.ClickException(f"No tag matching {tag_name!r}")
+            filtered_projects = {
+                project_id: project
+                for project_id, project in filtered_projects.items()
+                if matching_tag_ids.intersection(project.tag_ids)
+            }
         if fmt == "json":
-            render_projects_json(model.projects)
+            render_projects_json(filtered_projects)
         else:
-            render_project_tree(model.folders, model.projects, status_filter=status)
+            render_project_tree(model.folders, filtered_projects, status_filter="all")
 
     _run(_run_projects())
 
@@ -626,6 +737,24 @@ def folders_cmd(fmt: str) -> None:
             render_folder_tree(model.folders, model.projects)
 
     _run(_run_folders())
+
+
+@cli.command("tags")
+@click.option(
+    "--format", "fmt", type=click.Choice(["tree", "json"]), default="tree", help="Output format."
+)
+@click.option("--all", "show_all", is_flag=True, help="Include dropped/hidden tags.")
+def tags_cmd(fmt: str, show_all: bool) -> None:
+    """Show the tag hierarchy."""
+
+    async def _run_tags() -> None:
+        model = await _get_model()
+        if fmt == "json":
+            render_tags_json(model.tags, include_hidden=show_all)
+        else:
+            render_tag_tree(model.tags, include_hidden=show_all)
+
+    _run(_run_tags())
 
 
 @cli.command("folder-add")
@@ -721,6 +850,126 @@ def folder_drop_cmd(query: str, yes: bool) -> None:
     _run(_run_folder_drop())
 
 
+@cli.command("tag-add")
+@click.argument("name")
+@click.option("--parent", "parent_query", default=None, metavar="QUERY")
+@click.option("--parent-id", default=None, metavar="TAG_ID")
+@click.option("--note", default="", metavar="TEXT")
+def tag_add_cmd(
+    name: str,
+    parent_query: str | None,
+    parent_id: str | None,
+    note: str,
+) -> None:
+    """Add a new tag."""
+
+    async def _run_tag_add() -> None:
+        model = await _get_model()
+        if parent_query and parent_id:
+            raise click.ClickException("--parent and --parent-id cannot be combined")
+        resolved_parent_id = parent_id
+        if parent_query:
+            resolved_parent_id = _match_tag_id(model, parent_query)
+        if resolved_parent_id and resolved_parent_id not in model.tags:
+            raise click.ClickException(f"Tag not found: {resolved_parent_id}")
+        try:
+            async with OFocusStore.from_env() as store:
+                result = await store.add_tag(
+                    name=name,
+                    parent_tag_id=resolved_parent_id,
+                    note=note,
+                )
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Added tag: {name!r} (id={result['tag_id']})")
+
+    _run(_run_tag_add())
+
+
+@cli.command("tag-update")
+@click.argument("query")
+@click.option("--name", "new_name", default=None, metavar="NAME")
+@click.option("--parent", "parent_query", default=None, metavar="QUERY")
+@click.option("--parent-id", default=None, metavar="TAG_ID")
+@click.option("--clear-parent", is_flag=True)
+@click.option("--note", default=None, metavar="TEXT")
+def tag_update_cmd(
+    query: str,
+    new_name: str | None,
+    parent_query: str | None,
+    parent_id: str | None,
+    clear_parent: bool,
+    note: str | None,
+) -> None:
+    """Rename a tag or move it under another tag."""
+
+    async def _run_tag_update() -> None:
+        model = await _get_model()
+        tag = _match_tag(model, query, include_hidden=True)
+        if parent_query and parent_id:
+            raise click.ClickException("--parent and --parent-id cannot be combined")
+        resolved_parent_id = parent_id
+        if parent_query:
+            resolved_parent_id = _match_tag_id(model, parent_query)
+        _validate_tag_parent_change(
+            model=model,
+            tag_id=tag.id,
+            parent_tag_id=resolved_parent_id,
+            clear_parent=clear_parent,
+        )
+        if resolved_parent_id is not None:
+            new_parent_id = resolved_parent_id
+        elif clear_parent:
+            new_parent_id = None
+        else:
+            new_parent_id = tag.parent_tag_id
+        updated = Tag(
+            id=tag.id,
+            name=new_name or tag.name,
+            parent_tag_id=new_parent_id,
+            rank=tag.rank,
+            added=tag.added,
+            modified=datetime.now(UTC),
+            note=tag.note if note is None else note,
+            hidden=tag.hidden,
+        )
+        try:
+            async with OFocusStore.from_env() as store:
+                await store.update_tag(updated)
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Updated tag: {updated.name!r}")
+
+    _run(_run_tag_update())
+
+
+@cli.command("tag-drop")
+@click.argument("query")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+def tag_drop_cmd(query: str, yes: bool) -> None:
+    """Drop a tag."""
+
+    async def _run_tag_drop() -> None:
+        model = await _get_model()
+        tag = _match_tag(model, query)
+        if not yes:
+            click.confirm(f"Drop tag: {tag.name!r}?", abort=True)
+        try:
+            async with OFocusStore.from_env() as store:
+                await store.drop_tag(tag)
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Dropped tag: {tag.name!r}")
+
+    _run(_run_tag_drop())
+
+
 @cli.command("project-add")
 @click.argument("name")
 @click.option("--folder", "folder_name", default=None, metavar="NAME")
@@ -809,6 +1058,8 @@ def project_update_cmd(
         project = _match_project(model, query)
         if folder_id and clear_folder:
             raise click.ClickException("--folder-id and --clear-folder cannot be combined")
+        if clear_tags and tag_ids:
+            raise click.ClickException("--tag-id and --clear-tags cannot be combined")
         if folder_id:
             if folder_id not in model.folders:
                 raise click.ClickException(f"Folder not found: {folder_id}")
@@ -817,6 +1068,11 @@ def project_update_cmd(
             new_folder_id = None
         else:
             new_folder_id = project.folder_id
+        if tag_ids:
+            missing_tag_ids = [tag_id for tag_id in tag_ids if tag_id not in model.tags]
+            if missing_tag_ids:
+                joined = ", ".join(missing_tag_ids)
+                raise click.ClickException(f"Unknown tag IDs: {joined}")
         due_dt = None if clear_due else (_parse_due(due_str) if due_str else project.due)
         defer_dt = None if clear_defer else (_parse_due(defer_str) if defer_str else project.start)
         now = datetime.now(UTC)

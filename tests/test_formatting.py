@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
+import dataclasses
 import json
 from datetime import UTC, datetime
 from io import StringIO
@@ -17,14 +18,17 @@ from omnifocus.formatting import (
     _project_name,
     build_folder_tree_data,
     build_project_group_data,
+    build_tag_tree_data,
     render_folder_tree,
     render_folders_json,
     render_project_tree,
     render_projects_json,
+    render_tag_tree,
+    render_tags_json,
     render_tasks_json,
     render_tasks_table,
 )
-from omnifocus.models import Folder, Project, Task
+from omnifocus.models import Folder, Project, Tag, Task
 
 UTC = UTC
 NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
@@ -92,6 +96,17 @@ def _folder(fid: str = "f1", name: str = "Work") -> Folder:
         id=fid,
         name=name,
         parent_folder_id=None,
+        rank=100,
+        added=NOW,
+        modified=NOW,
+    )
+
+
+def _tag(tid: str = "tag1", name: str = "@home", parent_tag_id: str | None = None) -> Tag:
+    return Tag(
+        id=tid,
+        name=name,
+        parent_tag_id=parent_tag_id,
         rank=100,
         added=NOW,
         modified=NOW,
@@ -418,6 +433,61 @@ class TestRenderProjectsJson:
         data = json.loads(buf.getvalue())
         assert data[0]["id"] == "p1"
         assert data[0]["name"] == "Beta"
+
+
+class TestTagFormatting:
+    def test_build_tag_tree_data_nests_children(self) -> None:
+        data = build_tag_tree_data(
+            {
+                "tag1": _tag("tag1", "@home"),
+                "tag2": _tag("tag2", "@desk", parent_tag_id="tag1"),
+            }
+        )
+        assert data["tags"][0]["tag"]["id"] == "tag1"
+        assert data["tags"][0]["children"][0]["tag"]["id"] == "tag2"
+
+    def test_render_tag_tree(self) -> None:
+        con, buf = _console()
+        render_tag_tree({"tag1": _tag("tag1", "@home")}, console=con)
+        assert "@home" in buf.getvalue()
+
+    def test_render_tag_tree_nested_child(self) -> None:
+        con, buf = _console()
+        render_tag_tree(
+            {
+                "tag1": _tag("tag1", "@home"),
+                "tag2": _tag("tag2", "@desk", parent_tag_id="tag1"),
+            },
+            console=con,
+        )
+        output = buf.getvalue()
+        assert "@home" in output
+        assert "@desk" in output
+
+    def test_render_tag_tree_marks_hidden_tags_when_included(self) -> None:
+        con, buf = _console()
+        render_tag_tree(
+            {"tag1": dataclasses.replace(_tag("tag1", "@home"), hidden=NOW)},
+            include_hidden=True,
+            console=con,
+        )
+        assert "dropped" in buf.getvalue()
+
+    def test_render_tags_json(self) -> None:
+        con, buf = _console()
+        render_tags_json({"tag1": _tag("tag1", "@home")}, console=con)
+        data = json.loads(buf.getvalue())
+        assert data["tags"][0]["tag"]["id"] == "tag1"
+
+    def test_render_tags_json_includes_hidden_when_requested(self) -> None:
+        con, buf = _console()
+        render_tags_json(
+            {"tag1": dataclasses.replace(_tag("tag1", "@home"), hidden=NOW)},
+            include_hidden=True,
+            console=con,
+        )
+        data = json.loads(buf.getvalue())
+        assert data["tags"][0]["tag"]["hidden"] is not None
 
 
 # ---------------------------------------------------------------------------

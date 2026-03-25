@@ -11,10 +11,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from omnifocus.models import Folder, Project, Task
+from omnifocus.models import Folder, Project, Tag, Task
 from omnifocus.writer import (
     AddFolderPlan,
     AddProjectPlan,
+    AddTagPlan,
     AddTaskPlan,
     TaskWriter,
     TransactionBuilder,
@@ -493,6 +494,24 @@ class TestTransactionBuilder:
         assert folder_el.find(f"{NS}name") is None
         assert folder_el.find(f"{NS}added") is not None
 
+    def test_add_tag_element(self) -> None:
+        builder = TransactionBuilder()
+        builder.add_tag(
+            tag_id="tag1",
+            name="@home",
+            parent_tag_id="parent1",
+            rank=100,
+            added_dt=NOW,
+            modified_dt=NOW,
+            note="Desk",
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        tag_el = root.find(f"{NS}context")
+        assert tag_el is not None
+        assert tag_el.find(f"{NS}name").text == "@home"
+        assert tag_el.find(f"{NS}context").get("idref") == "parent1"
+        assert tag_el.find(f"{NS}note").text == "Desk"
+
     def test_folder_element_can_omit_optional_fields(self) -> None:
         builder = TransactionBuilder()
         xml = builder._folder_element(  # noqa: SLF001
@@ -505,6 +524,21 @@ class TestTransactionBuilder:
             modified_dt=None,
         )
         assert xml == '<folder id="folder1" op="update"></folder>'
+
+    def test_tag_element_can_omit_optional_fields(self) -> None:
+        builder = TransactionBuilder()
+        xml = builder._tag_element(  # noqa: SLF001
+            tag_id="tag1",
+            op="update",
+            name=None,
+            parent_tag_id="parent1",
+            rank=None,
+            added_dt=None,
+            modified_dt=None,
+            note=None,
+            hidden_dt=None,
+        )
+        assert xml == '<context id="tag1" op="update"><context idref="parent1"/></context>'
 
     def test_add_task_snapshot_matches_app_like_shape(self) -> None:
         builder = TransactionBuilder()
@@ -952,6 +986,51 @@ class TestTaskWriter:
         assert folder_el is not None
         assert folder_el.get("op") == "delete"
         assert folder_el.find(f"{NS}name") is None
+
+    def test_add_tag_returns_tuple(self) -> None:
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        fname, data, tag_id = writer.add_tag("@home")
+        assert fname.endswith(".zip")
+        assert data[:2] == b"PK"
+        assert len(tag_id) >= 10
+
+    def test_add_tag_plan_iterates_without_deltas(self) -> None:
+        assert tuple(AddTagPlan(tag_id="tag1", deltas=())) == (None, None, "tag1")
+
+    def test_update_tag_keeps_parent_reference(self) -> None:
+        tag = Tag(
+            id="tag1",
+            name="@home",
+            parent_tag_id="parent1",
+            rank=200,
+            added=NOW,
+            modified=NOW,
+            note="Desk",
+        )
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        _, data = writer.update_tag(tag, when=NOW)
+        root = ET.fromstring(_unzip_contents(data))  # noqa: S314
+        tag_el = root.find(f"{NS}context")
+        assert tag_el is not None
+        assert tag_el.find(f"{NS}name").text == "@home"
+        assert tag_el.find(f"{NS}context").get("idref") == "parent1"
+        assert tag_el.find(f"{NS}note").text == "Desk"
+
+    def test_drop_tag_marks_tag_hidden(self) -> None:
+        tag = Tag(
+            id="tag1",
+            name="@home",
+            parent_tag_id=None,
+            rank=200,
+            added=NOW,
+            modified=NOW,
+        )
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        _, data = writer.drop_tag(tag)
+        root = ET.fromstring(_unzip_contents(data))  # noqa: S314
+        tag_el = root.find(f"{NS}context")
+        assert tag_el is not None
+        assert tag_el.find(f"{NS}hidden") is not None
 
     def test_upsert_project_keeps_project_fields(self) -> None:
         project = Project(

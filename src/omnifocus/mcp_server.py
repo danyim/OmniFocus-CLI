@@ -24,6 +24,11 @@ Tools
 ``add_folder``      Create a new folder.
 ``update_folder``   Update a folder.
 ``drop_folder``     Drop a folder.
+``list_tags``       List all tags.
+``get_tag``         Retrieve a single tag by id.
+``add_tag``         Create a new tag.
+``update_tag``      Update a tag.
+``drop_tag``        Drop a tag.
 ``sync_now``        Trigger a full WebDAV sync.
 
 Usage::
@@ -72,7 +77,7 @@ from mcp.types import TextContent, Tool
 from omnifocus.errors import OFError
 from omnifocus.formatting import build_folder_tree_data
 from omnifocus.fuzzy import find_tasks
-from omnifocus.models import Folder, OFModel, Project, Task
+from omnifocus.models import Folder, OFModel, Project, Tag, Task
 from omnifocus.review import (
     ProjectReviewState,
     compute_project_review_state,
@@ -165,6 +170,8 @@ async def list_tools() -> list[Tool]:
                     "flagged": {"type": "boolean", "description": "Flagged tasks only"},
                     "due": {"type": "boolean", "description": "Tasks with any due date"},
                     "project": {"type": "string", "description": "Project name substring"},
+                    "tag": {"type": "string", "description": "Tag name substring"},
+                    "tag_id": {"type": "string", "description": "Exact tag ID"},
                     "limit": {"type": "integer", "description": "Max tasks to return (default 50)"},
                 },
             },
@@ -335,6 +342,8 @@ async def list_tools() -> list[Tool]:
                         "enum": ["active", "all", "inactive", "done", "dropped"],
                         "description": "Filter by status (default: active)",
                     },
+                    "tag": {"type": "string", "description": "Tag name substring"},
+                    "tag_id": {"type": "string", "description": "Exact tag ID"},
                 },
             },
         ),
@@ -425,6 +434,65 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="list_tags",
+            description="List OmniFocus tags/contexts.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "all": {
+                        "type": "boolean",
+                        "description": "Include dropped/hidden tags",
+                    }
+                },
+            },
+        ),
+        Tool(
+            name="get_tag",
+            description="Get a single tag by its OmniFocus ID.",
+            inputSchema={
+                "type": "object",
+                "properties": {"tag_id": {"type": "string", "description": "Tag ID"}},
+                "required": ["tag_id"],
+            },
+        ),
+        Tool(
+            name="add_tag",
+            description="Create a new OmniFocus tag.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "parent_tag_id": {"type": "string"},
+                    "note": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="update_tag",
+            description="Rename or move a tag under another tag.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "tag_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "parent_tag_id": {"type": "string"},
+                    "clear_parent": {"type": "boolean"},
+                    "note": {"type": "string"},
+                },
+                "required": ["tag_id"],
+            },
+        ),
+        Tool(
+            name="drop_tag",
+            description="Drop a tag by ID.",
+            inputSchema={
+                "type": "object",
+                "properties": {"tag_id": {"type": "string"}},
+                "required": ["tag_id"],
+            },
+        ),
+        Tool(
             name="sync_now",
             description="Trigger a full sync from the WebDAV server.",
             inputSchema={"type": "object", "properties": {}},
@@ -460,6 +528,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "add_folder": _handle_add_folder,
         "update_folder": _handle_update_folder,
         "drop_folder": _handle_drop_folder,
+        "list_tags": _handle_list_tags,
+        "get_tag": _handle_get_tag,
+        "add_tag": _handle_add_tag,
+        "update_tag": _handle_update_tag,
+        "drop_tag": _handle_drop_tag,
         "sync_now": _handle_sync_now,
     }
     handler = handlers.get(name)
@@ -470,6 +543,20 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return await typed_handler(arguments)
     except OFError as exc:
         return _text({"error": str(exc)})
+
+
+def _matching_tag_ids(
+    model: OFModel,
+    query: str,
+    *,
+    include_hidden: bool = False,
+) -> set[str]:
+    """Return all matching tag ids for a substring query."""
+    return {
+        tag.id
+        for tag in model.tags.values()
+        if (include_hidden or tag.hidden is None) and query.lower() in tag.name.lower()
+    }
 
 
 async def _handle_list_tasks(args: dict[str, Any]) -> list[TextContent]:
@@ -490,6 +577,14 @@ async def _handle_list_tasks(args: dict[str, Any]) -> list[TextContent]:
         needle = args["project"].lower()
         matching = {pid for pid, p in model.projects.items() if needle in p.name.lower()}
         tasks = [t for t in tasks if t.project_id in matching]
+    if args.get("tag_id"):
+        tag_id = str(args["tag_id"])
+        if tag_id not in model.tags:
+            return _text({"error": f"Tag not found: {tag_id}"})
+        tasks = [task for task in tasks if tag_id in task.tag_ids]
+    if args.get("tag"):
+        matching_tag_ids = _matching_tag_ids(model, str(args["tag"]))
+        tasks = [task for task in tasks if matching_tag_ids.intersection(task.tag_ids)]
 
     return _text([_task_summary(t, model) for t in tasks[:limit]])
 
@@ -795,6 +890,16 @@ async def _handle_list_projects(args: dict[str, Any]) -> list[TextContent]:
     status = str(args.get("status", "active"))
     model = await _load_model()
     projects = [p for p in model.projects.values() if status == "all" or p.status == status]
+    if args.get("tag_id"):
+        tag_id = str(args["tag_id"])
+        if tag_id not in model.tags:
+            return _text({"error": f"Tag not found: {tag_id}"})
+        projects = [project for project in projects if tag_id in project.tag_ids]
+    if args.get("tag"):
+        matching_tag_ids = _matching_tag_ids(model, str(args["tag"]))
+        projects = [
+            project for project in projects if matching_tag_ids.intersection(project.tag_ids)
+        ]
     return _text([_project_summary(project, model) for project in projects])
 
 
@@ -918,6 +1023,88 @@ async def _handle_drop_folder(args: dict[str, Any]) -> list[TextContent]:
     return _text(result)
 
 
+async def _handle_list_tags(args: dict[str, Any]) -> list[TextContent]:
+    model = await _load_model()
+    include_hidden = bool(args.get("all", False))
+    tags = [tag for tag in model.tags.values() if include_hidden or tag.hidden is None]
+    tags.sort(key=lambda item: (item.rank, item.name.lower(), item.id))
+    return _text([_tag_summary(tag, model) for tag in tags])
+
+
+async def _handle_get_tag(args: dict[str, Any]) -> list[TextContent]:
+    tag_id = str(args.get("tag_id", ""))
+    model = await _load_model()
+    tag = model.tags.get(tag_id)
+    if tag is None:
+        return _text({"error": f"Tag not found: {tag_id}"})
+    return _text(_tag_summary(tag, model))
+
+
+async def _handle_add_tag(args: dict[str, Any]) -> list[TextContent]:
+    name = str(args.get("name", ""))
+    if not name:
+        return _text({"error": "name is required"})
+    model = await _load_model()
+    parent_tag_id = str(args["parent_tag_id"]) if "parent_tag_id" in args else None
+    if parent_tag_id is not None and parent_tag_id not in model.tags:
+        return _text({"error": f"Tag not found: {parent_tag_id}"})
+    async with OFocusStore.from_env() as store:
+        result = await store.add_tag(
+            name=name,
+            parent_tag_id=parent_tag_id,
+            note=str(args.get("note", "")),
+        )
+    return _text(result)
+
+
+async def _handle_update_tag(args: dict[str, Any]) -> list[TextContent]:
+    tag_id = str(args.get("tag_id", ""))
+    model = await _load_model()
+    tag = model.tags.get(tag_id)
+    if tag is None:
+        return _text({"error": f"Tag not found: {tag_id}"})
+
+    parent_tag_id = str(args["parent_tag_id"]) if "parent_tag_id" in args else None
+    clear_parent = bool(args.get("clear_parent", False))
+    validation_error = _validate_tag_parent_change(
+        model=model,
+        tag_id=tag_id,
+        parent_tag_id=parent_tag_id,
+        clear_parent=clear_parent,
+    )
+    if validation_error is not None:
+        return _text({"error": validation_error})
+
+    if parent_tag_id is not None:
+        new_parent_tag_id = parent_tag_id
+    elif clear_parent:
+        new_parent_tag_id = None
+    else:
+        new_parent_tag_id = tag.parent_tag_id
+
+    updated = dataclasses.replace(
+        tag,
+        name=str(args["name"]) if "name" in args else tag.name,
+        parent_tag_id=new_parent_tag_id,
+        modified=datetime.now(UTC),
+        note=str(args["note"]) if "note" in args else tag.note,
+    )
+    async with OFocusStore.from_env() as store:
+        result = await store.update_tag(updated)
+    return _text(result)
+
+
+async def _handle_drop_tag(args: dict[str, Any]) -> list[TextContent]:
+    tag_id = str(args.get("tag_id", ""))
+    model = await _load_model()
+    tag = model.tags.get(tag_id)
+    if tag is None:
+        return _text({"error": f"Tag not found: {tag_id}"})
+    async with OFocusStore.from_env() as store:
+        result = await store.drop_tag(tag)
+    return _text(result)
+
+
 async def _handle_sync_now(args: dict[str, Any]) -> list[TextContent]:
     async with OFocusStore.from_env() as store:
         model = await store.load(force_refresh=True)
@@ -950,6 +1137,7 @@ def _task_summary(task: Task, model: OFModel) -> dict[str, Any]:
         "completed": task.completed.isoformat() if task.completed else None,
         "note": task.note,
         "tag_ids": list(task.tag_ids),
+        "tag_names": [model.tags[tag_id].name for tag_id in task.tag_ids if tag_id in model.tags],
     }
 
 
@@ -965,6 +1153,9 @@ def _project_summary(
     return {
         **dataclasses.asdict(project),
         "folder_name": folder.name if folder is not None else None,
+        "tag_names": [
+            model.tags[tag_id].name for tag_id in project.tag_ids if tag_id in model.tags
+        ],
         "review_due": review_state.due,
         "review_basis": review_state.basis,
     }
@@ -1009,6 +1200,21 @@ def _folder_summary(folder: Folder, model: OFModel) -> dict[str, Any]:
     }
 
 
+def _tag_summary(tag: Tag, model: OFModel) -> dict[str, Any]:
+    """Return a concise dict representation of a tag."""
+    child_tags = sorted(
+        (candidate for candidate in model.tags.values() if candidate.parent_tag_id == tag.id),
+        key=lambda item: (item.rank, item.name.lower(), item.id),
+    )
+    return {
+        **dataclasses.asdict(tag),
+        "parent_name": (
+            model.tags[tag.parent_tag_id].name if tag.parent_tag_id in model.tags else None
+        ),
+        "child_tag_ids": [candidate.id for candidate in child_tags],
+    }
+
+
 def _validate_folder_parent_change(
     *,
     model: OFModel,
@@ -1033,6 +1239,33 @@ def _validate_folder_parent_change(
         seen.add(current_id)
         parent = model.folders.get(current_id)
         current_id = None if parent is None else parent.parent_folder_id
+    return None
+
+
+def _validate_tag_parent_change(
+    *,
+    model: OFModel,
+    tag_id: str,
+    parent_tag_id: str | None,
+    clear_parent: bool,
+) -> str | None:
+    """Validate requested tag reparenting."""
+    if parent_tag_id and clear_parent:
+        return "parent_tag_id and clear_parent cannot be combined"
+    if parent_tag_id is None:
+        return None
+    if parent_tag_id not in model.tags:
+        return f"Tag not found: {parent_tag_id}"
+    if parent_tag_id == tag_id:
+        return "Tag cannot be its own parent"
+    seen: set[str] = {tag_id}
+    current_id: str | None = parent_tag_id
+    while current_id is not None:
+        if current_id in seen:
+            return "Tag move would create a cycle"
+        seen.add(current_id)
+        parent = model.tags.get(current_id)
+        current_id = None if parent is None else parent.parent_tag_id
     return None
 
 

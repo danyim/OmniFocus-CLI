@@ -66,7 +66,7 @@ from urllib.parse import urlsplit
 
 from omnifocus.crypto.discovery import is_encrypted
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
-from omnifocus.models import Folder, OFModel, Project, Task
+from omnifocus.models import Folder, OFModel, Project, Tag, Task
 from omnifocus.parser import build_model
 from omnifocus.review import mark_project_reviewed as mark_reviewed_project
 from omnifocus.sync.client_state import (
@@ -560,6 +560,32 @@ class OFocusStore:
         )
         return {"status": "created", "folder_id": plan.folder_id, "name": name}
 
+    async def add_tag(
+        self,
+        *,
+        name: str,
+        parent_tag_id: str | None = None,
+        note: str = "",
+        rank: int | None = None,
+    ) -> dict[str, str]:
+        """Create and upload a tag transaction."""
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        plan = writer.add_tag(
+            name=name,
+            parent_tag_id=parent_tag_id,
+            note=note,
+            rank=rank,
+            write_strategy=_configured_write_strategy(),
+            chain_shape=_configured_chain_shape(),
+        )
+        await self._upload_write_plan(
+            plan,
+            encrypted_plist=encrypted_plist,
+            key_slot=key_slot,
+            writer_state=writer_state,
+        )
+        return {"status": "created", "tag_id": plan.tag_id, "name": name}
+
     async def update_folder(self, folder: Folder) -> dict[str, str]:
         """Upload a folder upsert transaction."""
         writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
@@ -591,6 +617,38 @@ class OFocusStore:
             writer_state=writer_state,
         )
         return {"status": "dropped", "folder_id": folder.id, "name": folder.name}
+
+    async def update_tag(self, tag: Tag) -> dict[str, str]:
+        """Upload a tag upsert transaction."""
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        plan = writer.update_tag(
+            tag,
+            write_strategy=_configured_write_strategy(),
+            chain_shape=_configured_chain_shape(),
+        )
+        await self._upload_write_plan(
+            plan,
+            encrypted_plist=encrypted_plist,
+            key_slot=key_slot,
+            writer_state=writer_state,
+        )
+        return {"status": "updated", "tag_id": tag.id, "name": tag.name}
+
+    async def drop_tag(self, tag: Tag) -> dict[str, str]:
+        """Upload a tag drop transaction."""
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        plan = writer.drop_tag(
+            tag,
+            write_strategy=_configured_write_strategy(),
+            chain_shape=_configured_chain_shape(),
+        )
+        await self._upload_write_plan(
+            plan,
+            encrypted_plist=encrypted_plist,
+            key_slot=key_slot,
+            writer_state=writer_state,
+        )
+        return {"status": "dropped", "tag_id": tag.id, "name": tag.name}
 
     async def update_project(self, project: Project) -> dict[str, str]:
         """Upload a project upsert transaction."""

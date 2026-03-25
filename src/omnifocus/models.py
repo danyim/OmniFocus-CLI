@@ -51,12 +51,20 @@ class Tag:
         name: Display name.
         parent_tag_id: ``id`` of the parent tag, or ``None`` for root tags.
         rank: Integer sort key.
+        added: UTC datetime when the tag was created, or ``None`` when unknown.
+        modified: UTC datetime when the tag was last modified, or ``None`` when unknown.
+        note: Plain-text note content.
+        hidden: UTC datetime when the tag was dropped/hidden, or ``None`` if visible.
     """
 
     id: str
     name: str
     parent_tag_id: str | None
     rank: int
+    added: datetime | None = None
+    modified: datetime | None = None
+    note: str = ""
+    hidden: datetime | None = None
 
 
 @dataclass(frozen=True)

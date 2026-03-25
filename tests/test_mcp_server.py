@@ -7,6 +7,7 @@ __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 import dataclasses
 import json
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,28 +15,34 @@ import pytest
 from omnifocus.mcp_server import (
     _handle_add_folder,
     _handle_add_project,
+    _handle_add_tag,
     _handle_add_task,
     _handle_complete_project,
     _handle_complete_task,
     _handle_drop_folder,
+    _handle_drop_tag,
     _handle_get_folder,
     _handle_get_folder_tree,
     _handle_get_project,
+    _handle_get_tag,
     _handle_get_task,
     _handle_list_folders,
     _handle_list_projects,
     _handle_list_projects_for_review,
+    _handle_list_tags,
     _handle_list_tasks,
     _handle_mark_project_reviewed,
     _handle_search_tasks,
     _handle_sync_now,
     _handle_update_folder,
     _handle_update_project,
+    _handle_update_tag,
     _handle_update_task,
     _serialise,
     _task_summary,
     _text,
     _validate_folder_parent_change,
+    _validate_tag_parent_change,
     call_tool,
     list_tools,
 )
@@ -76,6 +83,7 @@ def _make_model() -> OFModel:
         last_review=datetime(2026, 2, 1, 12, 0, 0, tzinfo=UTC),
         next_review=datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC),
         review_interval="@1m",
+        tag_ids=("tag1",),
     )
     model.projects["p2"] = Project(
         id="p2",
@@ -94,6 +102,7 @@ def _make_model() -> OFModel:
         last_review=datetime(2026, 3, 15, 12, 0, 0, tzinfo=UTC),
         next_review=datetime(2026, 4, 15, 12, 0, 0, tzinfo=UTC),
         review_interval="@1m",
+        tag_ids=("tag2",),
     )
     model.projects["p3"] = Project(
         id="p3",
@@ -130,6 +139,7 @@ def _make_model() -> OFModel:
         rank=100,
         repetition_rule=None,
         estimated_minutes=60,
+        tag_ids=("tag1",),
         added=NOW,
         modified=NOW,
     )
@@ -210,6 +220,9 @@ def _mock_store(model: OFModel | None = None) -> MagicMock:
         return_value={"status": "updated", "folder_id": "f1", "name": "Work"}
     )
     m.drop_folder = AsyncMock(return_value={"status": "dropped", "folder_id": "f1", "name": "Work"})
+    m.add_tag = AsyncMock(return_value={"status": "created", "tag_id": "tag3", "name": "@new"})
+    m.update_tag = AsyncMock(return_value={"status": "updated", "tag_id": "tag1", "name": "@home"})
+    m.drop_tag = AsyncMock(return_value={"status": "dropped", "tag_id": "tag1", "name": "@home"})
     m.invalidate_cache = MagicMock()
     m._client = MagicMock()
     m._client.put_file = AsyncMock(return_value=None)
@@ -229,9 +242,9 @@ def _parse_response(contents: list) -> Any:
 
 class TestListTools:
     @pytest.mark.asyncio
-    async def test_returns_twenty_tools(self) -> None:
+    async def test_returns_twenty_five_tools(self) -> None:
         tools = await list_tools()
-        assert len(tools) == 20
+        assert len(tools) == 25
 
     @pytest.mark.asyncio
     async def test_tool_names(self) -> None:
@@ -257,6 +270,11 @@ class TestListTools:
             "add_folder",
             "update_folder",
             "drop_folder",
+            "list_tags",
+            "get_tag",
+            "add_tag",
+            "update_tag",
+            "drop_tag",
             "sync_now",
         }
         assert names == expected
@@ -338,6 +356,29 @@ class TestHandleListTasks:
         data = _parse_response(result)
         assert len(data) == 1
         assert data[0]["id"] == "t1"
+
+    @pytest.mark.asyncio
+    async def test_tag_filter(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_list_tasks({"tag": "@home"})
+        data = _parse_response(result)
+        assert len(data) == 1
+        assert data[0]["id"] == "t1"
+
+    @pytest.mark.asyncio
+    async def test_tag_id_filter(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_list_tasks({"tag_id": "tag1"})
+        data = _parse_response(result)
+        assert len(data) == 1
+        assert data[0]["id"] == "t1"
+
+    @pytest.mark.asyncio
+    async def test_tag_id_filter_rejects_missing_tag(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_list_tasks({"tag_id": "missing"})
+        data = _parse_response(result)
+        assert data["error"] == "Tag not found: missing"
 
     @pytest.mark.asyncio
     async def test_limit(self) -> None:
@@ -982,6 +1023,27 @@ class TestHandleListProjects:
         data = _parse_response(result)
         assert len(data) >= 1
 
+    @pytest.mark.asyncio
+    async def test_tag_filter(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_list_projects({"tag": "@desk"})
+        data = _parse_response(result)
+        assert {project["id"] for project in data} == {"p2"}
+
+    @pytest.mark.asyncio
+    async def test_tag_id_filter(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_list_projects({"tag_id": "tag1"})
+        data = _parse_response(result)
+        assert {project["id"] for project in data} == {"p1"}
+
+    @pytest.mark.asyncio
+    async def test_tag_id_filter_rejects_missing_tag(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_list_projects({"tag_id": "missing"})
+        data = _parse_response(result)
+        assert data["error"] == "Tag not found: missing"
+
 
 class TestHandleListProjectsForReview:
     @pytest.mark.asyncio
@@ -1234,6 +1296,138 @@ class TestHandleFolderTools:
         assert "error" in data
 
 
+class TestHandleTagTools:
+    @pytest.mark.asyncio
+    async def test_list_tags_defaults_to_visible(self) -> None:
+        model = _make_model()
+        model.tags["tag2"] = dataclasses.replace(model.tags["tag2"], hidden=NOW)
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            result = await _handle_list_tags({})
+        data = _parse_response(result)
+        assert {tag["id"] for tag in data} == {"tag1"}
+
+    @pytest.mark.asyncio
+    async def test_list_tags_all_includes_hidden(self) -> None:
+        model = _make_model()
+        model.tags["tag2"] = dataclasses.replace(model.tags["tag2"], hidden=NOW)
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            result = await _handle_list_tags({"all": True})
+        data = _parse_response(result)
+        assert {tag["id"] for tag in data} == {"tag1", "tag2"}
+
+    @pytest.mark.asyncio
+    async def test_get_tag(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_get_tag({"tag_id": "tag1"})
+        data = _parse_response(result)
+        assert data["id"] == "tag1"
+
+    @pytest.mark.asyncio
+    async def test_get_tag_not_found(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_get_tag({"tag_id": "missing"})
+        data = _parse_response(result)
+        assert data["error"] == "Tag not found: missing"
+
+    @pytest.mark.asyncio
+    async def test_add_tag(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_add_tag({"name": "@new", "parent_tag_id": "tag1"})
+        data = _parse_response(result)
+        assert data["status"] == "created"
+        mock.add_tag.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_add_tag_missing_name(self) -> None:
+        result = await _handle_add_tag({})
+        data = _parse_response(result)
+        assert data["error"] == "name is required"
+
+    @pytest.mark.asyncio
+    async def test_add_tag_rejects_unknown_parent(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_add_tag({"name": "@new", "parent_tag_id": "missing"})
+        data = _parse_response(result)
+        assert data["error"] == "Tag not found: missing"
+
+    @pytest.mark.asyncio
+    async def test_update_tag(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_tag({"tag_id": "tag1", "name": "@house"})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated = mock.update_tag.await_args.args[0]
+        assert updated.name == "@house"
+
+    @pytest.mark.asyncio
+    async def test_update_tag_not_found(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_tag({"tag_id": "missing"})
+        data = _parse_response(result)
+        assert data["error"] == "Tag not found: missing"
+
+    @pytest.mark.asyncio
+    async def test_update_tag_clear_parent(self) -> None:
+        model = _make_model()
+        model.tags["tag2"] = dataclasses.replace(model.tags["tag2"], parent_tag_id="tag1")
+        mock = _mock_store(model)
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_tag({"tag_id": "tag2", "clear_parent": True})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated = mock.update_tag.await_args.args[0]
+        assert updated.parent_tag_id is None
+
+    @pytest.mark.asyncio
+    async def test_update_tag_sets_parent(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_tag({"tag_id": "tag2", "parent_tag_id": "tag1"})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated = mock.update_tag.await_args.args[0]
+        assert updated.parent_tag_id == "tag1"
+
+    @pytest.mark.asyncio
+    async def test_update_tag_rejects_conflicting_parent_inputs(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_tag(
+                {"tag_id": "tag1", "parent_tag_id": "tag2", "clear_parent": True}
+            )
+        data = _parse_response(result)
+        assert data["error"] == "parent_tag_id and clear_parent cannot be combined"
+
+    @pytest.mark.asyncio
+    async def test_update_tag_rejects_unknown_parent(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_tag({"tag_id": "tag1", "parent_tag_id": "missing"})
+        data = _parse_response(result)
+        assert data["error"] == "Tag not found: missing"
+
+    @pytest.mark.asyncio
+    async def test_drop_tag(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_drop_tag({"tag_id": "tag1"})
+        data = _parse_response(result)
+        assert data["status"] == "dropped"
+        mock.drop_tag.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_drop_tag_not_found(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_drop_tag({"tag_id": "missing"})
+        data = _parse_response(result)
+        assert data["error"] == "Tag not found: missing"
+
+
 class TestValidateFolderParentChange:
     def test_conflicting_inputs(self) -> None:
         result = _validate_folder_parent_change(
@@ -1249,6 +1443,56 @@ class TestValidateFolderParentChange:
             model=_make_model(),
             folder_id="f1",
             parent_folder_id=None,
+            clear_parent=False,
+        )
+        assert result is None
+
+
+class TestValidateTagParentChange:
+    def test_conflicting_inputs(self) -> None:
+        result = _validate_tag_parent_change(
+            model=_make_model(),
+            tag_id="tag1",
+            parent_tag_id="tag2",
+            clear_parent=True,
+        )
+        assert result == "parent_tag_id and clear_parent cannot be combined"
+
+    def test_missing_parent_rejected(self) -> None:
+        result = _validate_tag_parent_change(
+            model=_make_model(),
+            tag_id="tag1",
+            parent_tag_id="missing",
+            clear_parent=False,
+        )
+        assert result == "Tag not found: missing"
+
+    def test_self_parent_rejected(self) -> None:
+        result = _validate_tag_parent_change(
+            model=_make_model(),
+            tag_id="tag1",
+            parent_tag_id="tag1",
+            clear_parent=False,
+        )
+        assert result == "Tag cannot be its own parent"
+
+    def test_cycle_rejected(self) -> None:
+        model = _make_model()
+        model.tags["tag3"] = Tag(id="tag3", name="@nested", parent_tag_id="tag1", rank=300)
+        model.tags["tag1"] = dataclasses.replace(model.tags["tag1"], parent_tag_id="tag3")
+        result = _validate_tag_parent_change(
+            model=model,
+            tag_id="tag3",
+            parent_tag_id="tag1",
+            clear_parent=False,
+        )
+        assert result == "Tag move would create a cycle"
+
+    def test_valid_parent_chain_returns_none(self) -> None:
+        result = _validate_tag_parent_change(
+            model=_make_model(),
+            tag_id="tag2",
+            parent_tag_id="tag1",
             clear_parent=False,
         )
         assert result is None
@@ -1354,7 +1598,3 @@ class TestTaskSummary:
         model = _make_model()
         summary = _task_summary(model.tasks["t1"], model)
         assert summary["due"] is not None
-
-
-# Type annotation for _parse_response return
-from typing import Any  # noqa: E402
