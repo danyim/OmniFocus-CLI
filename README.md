@@ -83,6 +83,12 @@ podman run --rm --pull=always of --help
 podman run --rm --pull=always of --version
 ```
 
+## Documentation
+
+- [CLI reference](docs/cli.md)
+- [MCP reference](docs/mcp.md)
+- [Container and runtime notes](docs/container.md)
+
 ## Command Model
 
 The project exposes two native Python entrypoints:
@@ -103,36 +109,35 @@ The container image ships with a launcher:
 
 ## CLI Usage
 
-```text
-of sync
-of tasks [--inbox] [--today] [--flagged] [--due] [--project NAME]
-of add NAME [--project NAME] [--due DATE] [--flagged] [--note TEXT]
-of done QUERY [-y]
-of task-update QUERY [options]
-of task-drop QUERY [-y]
-of projects [--status active|all|inactive] [--format tree|json]
-of project-add NAME [options]
-of project-update QUERY [options]
-of project-done QUERY [-y]
-```
+The full CLI surface lives in [docs/cli.md](docs/cli.md).
+
+High-level command groups:
+
+- tasks
+- projects
+- folders
+- tags
+- sync
 
 ## Current Surface
 
 Today the project supports:
 
 - direct WebDAV sync of OmniFocus bundles
-- tasks, projects, and folders
+- tasks, projects, folders, and tags
+- project review workflow over MCP
 - MCP over stdio
 - headless/container-first deployment
 
 Not yet implemented:
 
-- tags as first-class CLI/MCP workflows
 - perspectives
 - statistics commands
 - dedicated inbox subcommands
 
 ## MCP Integration
+
+The detailed MCP tool catalog lives in [docs/mcp.md](docs/mcp.md).
 
 ### Container behavior
 
