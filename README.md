@@ -11,13 +11,29 @@ Independent OmniFocus 4 automation with a production CLI and a container-first M
 
 `omnifocus-cli` syncs directly with an OmniFocus WebDAV endpoint, reads encrypted `.ofocus` bundles, exposes a clean `of` command-line interface, and runs as an MCP server for Claude-compatible hosts.
 
+It does **not** require OmniFocus.app, macOS, AppleScript, or Omni Automation. If a host can
+reach your OmniFocus WebDAV bundle and provide the right credentials, `omnifocus-cli` can run
+there headlessly.
+
 ## Why This Project
 
 - Native-feeling CLI for day-to-day task management
 - MCP server over stdio for LLM tooling and local assistants
 - Direct WebDAV sync without AppleScript or Omni Automation glue
+- No dependency on OmniFocus.app or macOS at runtime
+- Headless/container-friendly operation on servers, CI runners, and agent boxes
 - Hermetic tests, strict typing, and 100% coverage enforcement
 - Podman-friendly runtime image with a non-root default user
+
+## No OmniFocus App Required
+
+`omnifocus-cli` talks to the sync bundle directly.
+
+- Required: WebDAV access to the `.ofocus` bundle and, when enabled, the encryption passphrase
+- Not required: OmniFocus.app installed locally
+- Not required: macOS
+- Not required: System Automation permissions
+- Supported deployment shape: local workstation, remote Linux box, CI job, or long-lived MCP host
 
 ## Quick Start
 
@@ -36,6 +52,7 @@ mkdir -p .of-cache
 ### Run CLI commands
 
 ```bash
+# Runs anywhere with network access to the WebDAV bundle
 podman run --rm \
   -v "$PWD/.of-cache":/cache \
   -e OF_CACHE_DIR=/cache \
@@ -47,6 +64,16 @@ podman run --rm \
   -e OF_CACHE_DIR=/cache \
   -e OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/ \
   of tasks --inbox
+```
+
+### Run as an MCP host process
+
+```bash
+podman run --rm -i \
+  -v "$PWD/.of-cache":/cache \
+  -e OF_CACHE_DIR=/cache \
+  -e OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/ \
+  of
 ```
 
 ### Inspect the CLI surface
@@ -88,6 +115,22 @@ of project-add NAME [options]
 of project-update QUERY [options]
 of project-done QUERY [-y]
 ```
+
+## Current Surface
+
+Today the project supports:
+
+- direct WebDAV sync of OmniFocus bundles
+- tasks, projects, and folders
+- MCP over stdio
+- headless/container-first deployment
+
+Not yet implemented:
+
+- tags as first-class CLI/MCP workflows
+- perspectives
+- statistics commands
+- dedicated inbox subcommands
 
 ## MCP Integration
 

@@ -7,6 +7,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.11] - 2026-03-25
+
+### Added
+
+- Add project review metadata to the parsed model and preserve it across write
+  paths so MCP and CLI updates no longer discard OmniFocus review state
+- Add MCP project review workflows with `get_project`,
+  `list_projects_for_review`, and `mark_project_reviewed`
+
+### Changed
+
+- Clarify in the README that `omnifocus-cli` runs directly against the WebDAV
+  bundle without requiring OmniFocus.app, macOS, or Automation permissions
+
+### Fixed
+
+- Replace deprecated `datetime.utcnow()` defaults with timezone-aware UTC
+  timestamps in the in-memory model
+
 ## [1.0.10] - 2026-03-25
 
 ### Added

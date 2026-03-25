@@ -20,10 +20,13 @@ from omnifocus.mcp_server import (
     _handle_drop_folder,
     _handle_get_folder,
     _handle_get_folder_tree,
+    _handle_get_project,
     _handle_get_task,
     _handle_list_folders,
     _handle_list_projects,
+    _handle_list_projects_for_review,
     _handle_list_tasks,
+    _handle_mark_project_reviewed,
     _handle_search_tasks,
     _handle_sync_now,
     _handle_update_folder,
@@ -70,6 +73,9 @@ def _make_model() -> OFModel:
         start=None,
         note="",
         completed=None,
+        last_review=datetime(2026, 2, 1, 12, 0, 0, tzinfo=UTC),
+        next_review=datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC),
+        review_interval="@1m",
     )
     model.projects["p2"] = Project(
         id="p2",
@@ -85,6 +91,9 @@ def _make_model() -> OFModel:
         start=None,
         note="",
         completed=None,
+        last_review=datetime(2026, 3, 15, 12, 0, 0, tzinfo=UTC),
+        next_review=datetime(2026, 4, 15, 12, 0, 0, tzinfo=UTC),
+        review_interval="@1m",
     )
     model.projects["p3"] = Project(
         id="p3",
@@ -100,6 +109,9 @@ def _make_model() -> OFModel:
         start=None,
         note="",
         completed=None,
+        last_review=None,
+        next_review=None,
+        review_interval="@1w",
     )
     model.tags["tag1"] = Tag(id="tag1", name="@home", parent_tag_id=None, rank=100)
     model.tags["tag2"] = Tag(id="tag2", name="@desk", parent_tag_id=None, rank=200)
@@ -176,6 +188,14 @@ def _mock_store(model: OFModel | None = None) -> MagicMock:
             "name": "Engineering",
         }
     )
+    m.mark_project_reviewed = AsyncMock(
+        return_value={
+            "status": "reviewed",
+            "project_id": "p1",
+            "name": "Engineering",
+            "next_review_recalculated": True,
+        }
+    )
     m.drop_project = AsyncMock(
         return_value={
             "status": "dropped",
@@ -209,9 +229,9 @@ def _parse_response(contents: list) -> Any:
 
 class TestListTools:
     @pytest.mark.asyncio
-    async def test_returns_seventeen_tools(self) -> None:
+    async def test_returns_twenty_tools(self) -> None:
         tools = await list_tools()
-        assert len(tools) == 17
+        assert len(tools) == 20
 
     @pytest.mark.asyncio
     async def test_tool_names(self) -> None:
@@ -224,10 +244,13 @@ class TestListTools:
             "add_task",
             "complete_task",
             "update_task",
+            "get_project",
             "add_project",
             "update_project",
             "complete_project",
             "list_projects",
+            "list_projects_for_review",
+            "mark_project_reviewed",
             "list_folders",
             "get_folder",
             "get_folder_tree",
@@ -916,6 +939,29 @@ class TestHandleCompleteProject:
 
 
 # ---------------------------------------------------------------------------
+# get_project
+# ---------------------------------------------------------------------------
+
+
+class TestHandleGetProject:
+    @pytest.mark.asyncio
+    async def test_returns_project_summary_with_review_fields(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_get_project({"project_id": "p1"})
+        data = _parse_response(result)
+        assert data["id"] == "p1"
+        assert data["review_interval"] == "@1m"
+        assert data["review_basis"] == "next_review"
+
+    @pytest.mark.asyncio
+    async def test_missing_project_returns_error(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_get_project({"project_id": "missing"})
+        data = _parse_response(result)
+        assert "error" in data
+
+
+# ---------------------------------------------------------------------------
 # list_projects
 # ---------------------------------------------------------------------------
 
@@ -927,6 +973,7 @@ class TestHandleListProjects:
             result = await _handle_list_projects({})
         data = _parse_response(result)
         assert {project["id"] for project in data} == {"p1", "p2"}
+        assert data[0]["review_basis"] == "next_review"
 
     @pytest.mark.asyncio
     async def test_all_status(self) -> None:
@@ -934,6 +981,87 @@ class TestHandleListProjects:
             result = await _handle_list_projects({"status": "all"})
         data = _parse_response(result)
         assert len(data) >= 1
+
+
+class TestHandleListProjectsForReview:
+    @pytest.mark.asyncio
+    async def test_returns_due_review_projects_only_by_default(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_list_projects_for_review({})
+        data = _parse_response(result)
+        assert [project["id"] for project in data] == ["p1", "p3"]
+        assert all(project["review_due"] for project in data)
+
+    @pytest.mark.asyncio
+    async def test_can_include_non_due_review_projects(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_list_projects_for_review({"due_only": False})
+        data = _parse_response(result)
+        assert {project["id"] for project in data} == {"p1", "p2", "p3"}
+
+    @pytest.mark.asyncio
+    async def test_unknown_review_schedule_sorts_last(self) -> None:
+        model = _make_model()
+        model.projects["p4"] = dataclasses.replace(
+            model.projects["p1"],
+            id="p4",
+            name="Unknown Schedule",
+            last_review=None,
+            next_review=None,
+            review_interval="bogus",
+        )
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            result = await _handle_list_projects_for_review({"due_only": False})
+        data = _parse_response(result)
+        assert data[-1]["id"] == "p4"
+        assert data[-1]["review_basis"] == "unknown"
+
+
+class TestHandleMarkProjectReviewed:
+    @pytest.mark.asyncio
+    async def test_marks_project_reviewed(self) -> None:
+        model = _make_model()
+        mock = _mock_store(model)
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_mark_project_reviewed(
+                    {"project_id": "p1", "reviewed_at": "2026-03-25T10:00:00+00:00"}
+                )
+        data = _parse_response(result)
+        assert data["id"] == "p1"
+        assert data["status"] == "reviewed"
+        assert data["next_review_recalculated"] is True
+        mock.mark_project_reviewed.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_marks_project_reviewed_with_naive_timestamp_as_utc(self) -> None:
+        model = _make_model()
+        mock = _mock_store(model)
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_mark_project_reviewed(
+                    {"project_id": "p1", "reviewed_at": "2026-03-25T10:00:00"}
+                )
+        data = _parse_response(result)
+        assert data["last_review"] == "2026-03-25T10:00:00+00:00"
+        called_reviewed_at = mock.mark_project_reviewed.await_args.kwargs["reviewed_at"]
+        assert called_reviewed_at == datetime(2026, 3, 25, 10, 0, 0, tzinfo=UTC)
+
+    @pytest.mark.asyncio
+    async def test_invalid_reviewed_at_returns_error(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_mark_project_reviewed(
+                {"project_id": "p1", "reviewed_at": "not-a-date"}
+            )
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_missing_project_returns_error(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_mark_project_reviewed({"project_id": "missing"})
+        data = _parse_response(result)
+        assert data["error"] == "Project not found: missing"
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ from __future__ import annotations
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 
 @dataclass(frozen=True)
@@ -78,6 +78,9 @@ class Project:
         start: Wall-clock defer datetime (local time), or ``None``.
         note: Plain-text note content (may be empty).
         completed: UTC datetime when the project was completed, or ``None``.
+        last_review: UTC datetime when the project was last reviewed, or ``None``.
+        next_review: UTC datetime when the project should next be reviewed, or ``None``.
+        review_interval: Raw OmniFocus review interval token, or ``None``.
         tag_ids: Ordered list of :class:`Tag` identifiers assigned to this project.
     """
 
@@ -94,6 +97,9 @@ class Project:
     start: datetime | None
     note: str
     completed: datetime | None
+    last_review: datetime | None = None
+    next_review: datetime | None = None
+    review_interval: str | None = None
     tag_ids: tuple[str, ...] = field(default_factory=tuple)
     repetition_rule: str | None = None
     repetition_method: str | None = None
@@ -150,8 +156,8 @@ class Task:
     repetition_rule: str | None
     estimated_minutes: int | None
     tag_ids: tuple[str, ...] = field(default_factory=tuple)
-    added: datetime = field(default_factory=lambda: datetime.utcnow())
-    modified: datetime = field(default_factory=lambda: datetime.utcnow())
+    added: datetime = field(default_factory=lambda: datetime.now(UTC))
+    modified: datetime = field(default_factory=lambda: datetime.now(UTC))
     order: str = "parallel"
     repetition_method: str | None = None
     repetition_schedule_type: str | None = None
@@ -182,7 +188,7 @@ class OFModel:
     projects: dict[str, Project] = field(default_factory=dict)
     tasks: dict[str, Task] = field(default_factory=dict)
     tags: dict[str, Tag] = field(default_factory=dict)
-    parsed_at: datetime = field(default_factory=datetime.utcnow)
+    parsed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def active_tasks(self) -> list[Task]:

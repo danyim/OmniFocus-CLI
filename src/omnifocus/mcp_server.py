@@ -11,10 +11,13 @@ Tools
 ``add_task``        Create a new task.
 ``complete_task``   Mark a task as completed.
 ``update_task``     Update task fields and state.
+``get_project``     Retrieve a single project by id.
 ``add_project``     Create a new project.
 ``update_project``  Update a project.
 ``complete_project`` Mark a project completed.
 ``list_projects``   List projects (optionally filtered by status).
+``list_projects_for_review`` List projects that are due for review.
+``mark_project_reviewed`` Stamp a project as reviewed.
 ``list_folders``    List all folders.
 ``get_folder``      Retrieve a single folder by id.
 ``get_folder_tree`` Return the nested folder/project tree.
@@ -69,7 +72,12 @@ from mcp.types import TextContent, Tool
 from omnifocus.errors import OFError
 from omnifocus.formatting import build_folder_tree_data
 from omnifocus.fuzzy import find_tasks
-from omnifocus.models import Folder, OFModel, Task
+from omnifocus.models import Folder, OFModel, Project, Task
+from omnifocus.review import (
+    ProjectReviewState,
+    compute_project_review_state,
+    mark_project_reviewed,
+)
 from omnifocus.store import OFocusStore
 
 # ---------------------------------------------------------------------------
@@ -121,6 +129,16 @@ def _parse_optional_date(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _parse_optional_utc_datetime(value: str | None) -> datetime | None:
+    """Parse an ISO 8601 timestamp and normalise naive values to UTC."""
+    parsed = _parse_optional_date(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +261,17 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="get_project",
+            description="Get a single project by its OmniFocus ID.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "description": "Project ID"},
+                },
+                "required": ["project_id"],
+            },
+        ),
+        Tool(
             name="add_project",
             description="Create a new OmniFocus project.",
             inputSchema={
@@ -307,6 +336,38 @@ async def list_tools() -> list[Tool]:
                         "description": "Filter by status (default: active)",
                     },
                 },
+            },
+        ),
+        Tool(
+            name="list_projects_for_review",
+            description="List active and inactive projects that are due for review.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "due_only": {
+                        "type": "boolean",
+                        "description": "When false, include non-due projects as well",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max projects to return (default 50)",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="mark_project_reviewed",
+            description="Stamp a project as reviewed and recalculate next review when possible.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "description": "Project ID"},
+                    "reviewed_at": {
+                        "type": "string",
+                        "description": "Optional ISO 8601 timestamp; defaults to now in UTC",
+                    },
+                },
+                "required": ["project_id"],
             },
         ),
         Tool(
@@ -386,10 +447,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "add_task": _handle_add_task,
         "complete_task": _handle_complete_task,
         "update_task": _handle_update_task,
+        "get_project": _handle_get_project,
         "add_project": _handle_add_project,
         "update_project": _handle_update_project,
         "complete_project": _handle_complete_project,
         "list_projects": _handle_list_projects,
+        "list_projects_for_review": _handle_list_projects_for_review,
+        "mark_project_reviewed": _handle_mark_project_reviewed,
         "list_folders": _handle_list_folders,
         "get_folder": _handle_get_folder,
         "get_folder_tree": _handle_get_folder_tree,
@@ -650,6 +714,15 @@ async def _handle_add_project(args: dict[str, Any]) -> list[TextContent]:
     return _text(result)
 
 
+async def _handle_get_project(args: dict[str, Any]) -> list[TextContent]:
+    project_id = str(args.get("project_id", ""))
+    model = await _load_model()
+    project = model.projects.get(project_id)
+    if project is None:
+        return _text({"error": f"Project not found: {project_id}"})
+    return _text(_project_summary(project, model))
+
+
 async def _handle_update_project(args: dict[str, Any]) -> list[TextContent]:
     project_id = str(args.get("project_id", ""))
     model = await _load_model()
@@ -722,7 +795,47 @@ async def _handle_list_projects(args: dict[str, Any]) -> list[TextContent]:
     status = str(args.get("status", "active"))
     model = await _load_model()
     projects = [p for p in model.projects.values() if status == "all" or p.status == status]
-    return _text([dataclasses.asdict(p) for p in projects])
+    return _text([_project_summary(project, model) for project in projects])
+
+
+async def _handle_list_projects_for_review(args: dict[str, Any]) -> list[TextContent]:
+    model = await _load_model()
+    due_only = bool(args.get("due_only", True))
+    limit = int(args.get("limit", 50))
+    now = datetime.now(UTC)
+    candidates = [
+        project for project in model.projects.values() if project.status in {"active", "inactive"}
+    ]
+    summaries: list[tuple[dict[str, Any], ProjectReviewState]] = [
+        (_project_summary(project, model, now=now), compute_project_review_state(project, now=now))
+        for project in candidates
+    ]
+    if due_only:
+        summaries = [item for item in summaries if item[1].due]
+    summaries.sort(key=lambda item: _project_review_sort_key(item[0], item[1]))
+    return _text([summary for summary, _state in summaries[:limit]])
+
+
+async def _handle_mark_project_reviewed(args: dict[str, Any]) -> list[TextContent]:
+    project_id = str(args.get("project_id", ""))
+    reviewed_at_raw = str(args["reviewed_at"]) if "reviewed_at" in args else None
+    reviewed_at = _parse_optional_utc_datetime(reviewed_at_raw)
+    if reviewed_at_raw is not None and reviewed_at is None:
+        return _text({"error": f"Invalid reviewed_at timestamp: {reviewed_at_raw!r}"})
+
+    model = await _load_model()
+    project = model.projects.get(project_id)
+    if project is None:
+        return _text({"error": f"Project not found: {project_id}"})
+
+    updated_project, recalculated = mark_project_reviewed(project, reviewed_at=reviewed_at)
+    async with OFocusStore.from_env() as store:
+        await store.mark_project_reviewed(project, reviewed_at=reviewed_at)
+
+    summary = _project_summary(updated_project, model, now=reviewed_at or datetime.now(UTC))
+    summary["next_review_recalculated"] = recalculated
+    summary["status"] = "reviewed"
+    return _text(summary)
 
 
 async def _handle_list_folders(args: dict[str, Any]) -> list[TextContent]:
@@ -838,6 +951,41 @@ def _task_summary(task: Task, model: OFModel) -> dict[str, Any]:
         "note": task.note,
         "tag_ids": list(task.tag_ids),
     }
+
+
+def _project_summary(
+    project: Project,
+    model: OFModel,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return a concise dict representation of a project."""
+    folder = model.folders.get(project.folder_id or "")
+    review_state = compute_project_review_state(project, now=now)
+    return {
+        **dataclasses.asdict(project),
+        "folder_name": folder.name if folder is not None else None,
+        "review_due": review_state.due,
+        "review_basis": review_state.basis,
+    }
+
+
+def _project_review_sort_key(
+    summary: dict[str, Any],
+    review_state: ProjectReviewState,
+) -> tuple[int, datetime, int, str, str]:
+    """Return a stable sort key for review queues."""
+    due_at = review_state.due_at or datetime.max.replace(tzinfo=UTC)
+    if review_state.basis == "unknown":
+        bucket = 2
+    elif review_state.due:
+        bucket = 0
+    else:
+        bucket = 1
+    rank = int(summary.get("rank", 0))
+    name = str(summary.get("name", "")).lower()
+    project_id = str(summary.get("id", ""))
+    return (bucket, due_at, rank, name, project_id)
 
 
 def _folder_summary(folder: Folder, model: OFModel) -> dict[str, Any]:

@@ -68,6 +68,7 @@ from omnifocus.crypto.discovery import is_encrypted
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
 from omnifocus.models import Folder, OFModel, Project, Task
 from omnifocus.parser import build_model
+from omnifocus.review import mark_project_reviewed as mark_reviewed_project
 from omnifocus.sync.client_state import (
     ClientStateDocument,
     create_client_state_document,
@@ -504,6 +505,9 @@ class OFocusStore:
         start_dt: datetime | None = None,
         note: str = "",
         singleton: bool = False,
+        last_review: datetime | None = None,
+        next_review: datetime | None = None,
+        review_interval: str | None = None,
         rank: int | None = None,
     ) -> dict[str, str]:
         """Create and upload a project transaction."""
@@ -517,6 +521,9 @@ class OFocusStore:
             start_dt=start_dt,
             note=note,
             singleton=singleton,
+            last_review=last_review,
+            next_review=next_review,
+            review_interval=review_interval,
             rank=rank,
             write_strategy=_configured_write_strategy(),
             chain_shape=_configured_chain_shape(),
@@ -616,6 +623,22 @@ class OFocusStore:
             writer_state=writer_state,
         )
         return {"status": "completed", "project_id": project.id, "name": project.name}
+
+    async def mark_project_reviewed(
+        self,
+        project: Project,
+        *,
+        reviewed_at: datetime | None = None,
+    ) -> dict[str, str | bool]:
+        """Upload a project review stamp transaction."""
+        updated, recalculated = mark_reviewed_project(project, reviewed_at=reviewed_at)
+        await self.update_project(updated)
+        return {
+            "status": "reviewed",
+            "project_id": project.id,
+            "name": project.name,
+            "next_review_recalculated": recalculated,
+        }
 
     async def drop_project(self, project: Project) -> dict[str, str]:
         """Upload a project drop transaction."""

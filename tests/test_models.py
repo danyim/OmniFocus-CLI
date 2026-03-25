@@ -131,6 +131,12 @@ class TestProject:
         p = _project()
         assert p.tag_ids == ()
 
+    def test_review_fields_default_empty(self) -> None:
+        p = _project()
+        assert p.last_review is None
+        assert p.next_review is None
+        assert p.review_interval is None
+
 
 class TestTask:
     def test_fields(self) -> None:
@@ -146,6 +152,26 @@ class TestTask:
     def test_order_default(self) -> None:
         t = _task()
         assert t.order == "parallel"
+
+    def test_default_timestamps_are_utc_aware(self) -> None:
+        t = Task(
+            id="t-defaults",
+            name="Generated",
+            parent_task_id=None,
+            project_id=None,
+            inbox=True,
+            completed=None,
+            flagged=False,
+            due=None,
+            start=None,
+            hidden=None,
+            note="",
+            rank=1,
+            repetition_rule=None,
+            estimated_minutes=None,
+        )
+        assert t.added.tzinfo is UTC
+        assert t.modified.tzinfo is UTC
 
 
 class TestOFModel:
@@ -188,3 +214,7 @@ class TestOFModel:
         assert model.active_tasks == []
         assert model.inbox_tasks == []
         assert model.active_projects == []
+
+    def test_parsed_at_default_is_utc_aware(self) -> None:
+        model = OFModel()
+        assert model.parsed_at.tzinfo is UTC

@@ -406,6 +406,29 @@ class TestTransactionBuilder:
         assert status_el is not None and status_el.text == "active"
         assert singleton_el is not None and singleton_el.text == "true"
 
+    def test_add_project_element_includes_review_fields(self) -> None:
+        builder = TransactionBuilder()
+        builder.add_project(
+            project_id="proj1",
+            name="Project One",
+            folder_id="folder1",
+            status="active",
+            singleton=False,
+            flagged=False,
+            rank=100,
+            added_dt=NOW,
+            modified_dt=NOW,
+            last_review=NOW,
+            next_review=datetime(2026, 4, 22, 12, 0, 0, tzinfo=UTC),
+            review_interval="@1m",
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        project_el = root.find(f"{NS}task/{NS}project")
+        assert project_el is not None
+        assert project_el.find(f"{NS}last-review") is not None
+        assert project_el.find(f"{NS}next-review") is not None
+        assert project_el.find(f"{NS}review-interval").text == "@1m"
+
     def test_task_includes_tag_contexts(self) -> None:
         builder = TransactionBuilder()
         builder.add_task(
@@ -945,6 +968,9 @@ class TestTaskWriter:
             start=datetime(2026, 5, 1, 19, 0, 0),
             note="Keep fields",
             completed=None,
+            last_review=NOW,
+            next_review=datetime(2026, 4, 22, 12, 0, 0, tzinfo=UTC),
+            review_interval="@1m",
             tag_ids=("tag1",),
         )
         writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
@@ -959,6 +985,9 @@ class TestTaskWriter:
         project_el = task_el.find(f"{NS}project")
         assert project_el.find(f"{NS}status").text == "inactive"
         assert project_el.find(f"{NS}singleton").text == "true"
+        assert project_el.find(f"{NS}last-review") is not None
+        assert project_el.find(f"{NS}next-review") is not None
+        assert project_el.find(f"{NS}review-interval").text == "@1m"
 
     def test_complete_project_sets_done_and_completed(self) -> None:
         project = Project(

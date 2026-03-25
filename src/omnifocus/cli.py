@@ -836,6 +836,9 @@ def project_update_cmd(
             completed=(
                 now if status == "done" and project.completed is None else project.completed
             ),
+            last_review=project.last_review,
+            next_review=project.next_review,
+            review_interval=project.review_interval,
             tag_ids=() if clear_tags else (tag_ids if tag_ids else project.tag_ids),
             repetition_rule=project.repetition_rule,
             repetition_method=project.repetition_method,
