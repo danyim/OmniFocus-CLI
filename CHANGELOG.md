@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.10] - 2026-03-25
+
+### Added
+
+- Parse OmniFocus multi-parent delta DAGs and materialize `reference-snapshot`
+  updates so synced folder and project structure stays consistent with the
+  upstream bundle
+
+### Changed
+
+- Split sync graph traversal into a dedicated `omnifocus.sync.graph` module to
+  keep store orchestration logic focused and easier to maintain
+- Differentiate `projects` from `folders` in the CLI by rendering a
+  project-centric view grouped by folder with richer project metadata
+- Document and enforce a temporary `pip-audit` allowlist for
+  `CVE-2026-4539` until upstream publishes a fixed `Pygments` release
+
 ## [1.0.9] - 2026-03-24
 
 ### Fixed

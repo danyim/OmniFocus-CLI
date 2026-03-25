@@ -6,7 +6,7 @@ Provides the ``of`` command group with production task and project workflows:
 - ``of tasks``     — list tasks with filters
 - ``of add``       — add a task
 - ``of done``      — mark a task complete
-- ``of projects``  — show the folder/project tree
+- ``of projects``  — show projects grouped by folder
 - ``of task-update`` — update a task
 - ``of task-drop`` — drop a task
 - ``of project-add`` — add a project
@@ -65,6 +65,7 @@ Common commands:
   of add "Buy milk" --project Errands
   of done "Write tests" --yes
   of projects --status active
+  of folders
 
 Container usage:
   podman run --rm IMAGE sync
@@ -598,7 +599,7 @@ def task_drop_cmd(query: str, yes: bool) -> None:
     "--format", "fmt", type=click.Choice(["tree", "json"]), default="tree", help="Output format."
 )
 def projects_cmd(status: str, fmt: str) -> None:
-    """Show the folder/project hierarchy."""
+    """Show projects grouped by folder with project details."""
 
     async def _run_projects() -> None:
         model = await _get_model()

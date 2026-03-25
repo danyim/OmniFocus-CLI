@@ -11,10 +11,12 @@ from io import StringIO
 from rich.console import Console
 
 from omnifocus.formatting import (
+    _folder_path_label,
     _format_due,
     _project_icon,
     _project_name,
     build_folder_tree_data,
+    build_project_group_data,
     render_folder_tree,
     render_folders_json,
     render_project_tree,
@@ -216,18 +218,21 @@ class TestRenderProjectTree:
         folders = {"f1": _folder()}
         projects = {"p1": _project("p1", "Alpha", folder_id="f1")}
         render_project_tree(folders, projects, console=con)
+        assert "Projects" in buf.getvalue()
         assert "Alpha" in buf.getvalue()
 
-    def test_shows_folder_name(self) -> None:
+    def test_shows_group_label_for_folder(self) -> None:
         con, buf = _console()
         folders = {"f1": _folder("f1", "Engineering")}
-        render_project_tree(folders, {}, console=con)
+        projects = {"p1": _project("p1", "Alpha", folder_id="f1")}
+        render_project_tree(folders, projects, console=con)
         assert "Engineering" in buf.getvalue()
 
     def test_project_without_folder(self) -> None:
         con, buf = _console()
         projects = {"p1": _project("p1", "Orphan Project", folder_id=None)}
         render_project_tree({}, projects, console=con)
+        assert "No Folder" in buf.getvalue()
         assert "Orphan Project" in buf.getvalue()
 
     def test_status_filter_active_only(self) -> None:
@@ -258,7 +263,7 @@ class TestRenderProjectTree:
         render_project_tree({}, projects, console=con)
         assert "★" in buf.getvalue()
 
-    def test_nested_folders(self) -> None:
+    def test_nested_folders_use_path_grouping(self) -> None:
         con, buf = _console()
         folders = {
             "f1": _folder("f1", "Work"),
@@ -271,10 +276,53 @@ class TestRenderProjectTree:
                 modified=NOW,
             ),
         }
+        projects = {"p1": _project("p1", "Platform", folder_id="f2")}
+        render_project_tree(folders, projects, console=con)
+        output = buf.getvalue()
+        assert "Work / Engineering" in output
+        assert "Platform" in output
+
+    def test_empty_folders_do_not_dominate_output(self) -> None:
+        con, buf = _console()
+        folders = {"f1": _folder("f1", "Empty")}
         render_project_tree(folders, {}, console=con)
         output = buf.getvalue()
-        assert "Work" in output
-        assert "Engineering" in output
+        assert "Projects" in output
+        assert "Empty" not in output
+
+    def test_project_line_includes_details(self) -> None:
+        con, buf = _console()
+        project = Project(
+            id="p1",
+            name="Detailed",
+            folder_id=None,
+            status="active",
+            singleton=True,
+            rank=100,
+            added=NOW,
+            modified=NOW,
+            flagged=True,
+            due=datetime(2026, 3, 30, 19, 0, 0),
+            start=datetime(2026, 3, 28, 8, 0, 0),
+            note="",
+            completed=None,
+        )
+        render_project_tree({}, {"p1": project}, console=con)
+        output = buf.getvalue()
+        assert "Detailed" in output
+        assert "(p1)" in output
+        assert "singleton" in output
+        assert "start 2026-03-28" in output
+        assert "due 2026-03-30" in output
+
+    def test_missing_folder_bucket_shows_folder_id(self) -> None:
+        con, buf = _console()
+        projects = {"p1": _project("p1", "Dangling", folder_id="missing")}
+        render_project_tree({}, projects, console=con)
+        output = buf.getvalue()
+        assert "Missing Folder" in output
+        assert "Dangling" in output
+        assert "-> missing" in output
 
     def test_empty_everything(self) -> None:
         con, _ = _console()
@@ -421,3 +469,21 @@ class TestHelpers:
 
     def test_project_icon_unknown(self) -> None:
         assert _project_icon("bogus") == "?"
+
+    def test_folder_path_label_for_missing_folder_id(self) -> None:
+        assert _folder_path_label("missing", {}) == "(missing)"
+
+    def test_build_project_group_data_treats_missing_parent_as_dangling(self) -> None:
+        folders = {
+            "child": Folder(
+                id="child",
+                name="Child",
+                parent_folder_id="missing-parent",
+                rank=100,
+                added=NOW,
+                modified=NOW,
+            )
+        }
+        projects = {"p1": _project("p1", "Platform", folder_id="child")}
+        data = build_project_group_data(folders, projects)
+        assert data["groups"][0]["label"] == "Child"

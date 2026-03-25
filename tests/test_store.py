@@ -18,6 +18,15 @@ import pytest
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
 from omnifocus.models import Folder, OFModel, Project, Task
 from omnifocus.store import OFocusStore, _default_cache_dir, _WriterState
+from omnifocus.sync.graph import (
+    current_frontier_tail_ids,
+    current_tail_id,
+    maximal_tail_ids,
+    reachable_delta_tail_ids,
+    tail_depends_on,
+    tail_reachable_from_baseline,
+    transaction_filenames_for_frontier,
+)
 from omnifocus.sync.webdav import WebDAVClient
 from omnifocus.writer import WritePlan
 from tests.conftest import make_zip
@@ -26,6 +35,28 @@ _EMPTY_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2"/>'
 )
+_PERSONAL_BRANCH_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <folder id="personal-folder">
+    <added>2026-03-24T10:00:00.000Z</added>
+    <name>Personal</name>
+    <rank>1</rank>
+    <modified>2026-03-24T10:00:00.000Z</modified>
+  </folder>
+</omnifocus>
+"""
+_WORK_BRANCH_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <folder id="work-folder">
+    <added>2026-03-24T10:00:00.000Z</added>
+    <name>Work</name>
+    <rank>1</rank>
+    <modified>2026-03-24T10:00:00.000Z</modified>
+  </folder>
+</omnifocus>
+"""
 NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
 
 
@@ -221,7 +252,7 @@ class TestLoad:
     async def test_load_with_transactions(self, tmp_path: Path) -> None:
         store, client = _make_store(
             tmp_path,
-            filenames=["00000000000000=base+tail0.zip", "20260322154011=tail1+tail0.zip"],
+            filenames=["00000000000000=base+tail0.zip", "20260322154011=tail0+tail1.zip"],
         )
         client.get_file = AsyncMock(return_value=make_zip(_EMPTY_XML))
         model = await store.load()
@@ -250,7 +281,7 @@ class TestLoad:
         await store.load()
         client.list_entries.return_value = [
             "00000000000000=base+tail0.zip",
-            "20260322154011=tail1+tail0.zip",
+            "20260322154011=tail0+tail1.zip",
         ]
         await store.load()
         assert client.list_entries.call_count == 2
@@ -264,6 +295,111 @@ class TestLoad:
         await store.load()
         assert client.list_entries.call_count == 2
         assert client.get_file.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_load_applies_all_reachable_sink_tails(self, tmp_path: Path) -> None:
+        store, client = _make_store(
+            tmp_path,
+            filenames=[
+                "00000000000000=base+tail0.zip",
+                "20260324100000=tail0+head-personal.zip",
+                "20260324100001=tail0+head-work.zip",
+                "20260324100002=reader.client",
+            ],
+        )
+
+        async def get_file(name: str) -> bytes:
+            if name == "00000000000000=base+tail0.zip":
+                return make_zip(_EMPTY_XML)
+            if name == "20260324100000=tail0+head-personal.zip":
+                return make_zip(_PERSONAL_BRANCH_XML)
+            if name == "20260324100001=tail0+head-work.zip":
+                return make_zip(_WORK_BRANCH_XML)
+            if name == "20260324100002=reader.client":
+                return (
+                    b'<?xml version="1.0" encoding="UTF-8"?>'
+                    b'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+                    b'"http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+                    b'<plist version="1.0"><dict>'
+                    b"<key>clientIdentifier</key><string>reader</string>"
+                    b"<key>hostID</key><string>host-a</string>"
+                    b"<key>name</key><string>a.local</string>"
+                    b"<key>registrationDate</key><date>2026-03-24T10:00:02Z</date>"
+                    b"<key>lastSyncDate</key><date>2026-03-24T10:00:02Z</date>"
+                    b"<key>tailIdentifiers</key><array><string>head-work</string></array>"
+                    b"</dict></plist>"
+                )
+            raise AssertionError(f"Unexpected fetch: {name}")
+
+        client.get_file = AsyncMock(side_effect=get_file)
+
+        model = await store.load()
+
+        assert "work-folder" in model.folders
+        assert "personal-folder" in model.folders
+        fetched = [call.args[0] for call in client.get_file.await_args_list]
+        assert fetched == [
+            "20260324100002=reader.client",
+            "00000000000000=base+tail0.zip",
+            "20260324100000=tail0+head-personal.zip",
+            "20260324100001=tail0+head-work.zip",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_load_raises_when_current_tail_chain_cannot_be_resolved(
+        self, tmp_path: Path
+    ) -> None:
+        store, client = _make_store(
+            tmp_path,
+            filenames=[
+                "00000000000000=base+tail0.zip",
+                "20260324100002=reader.client",
+            ],
+        )
+
+        async def get_file(name: str) -> bytes:
+            if name == "20260324100002=reader.client":
+                return (
+                    b'<?xml version="1.0" encoding="UTF-8"?>'
+                    b'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+                    b'"http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+                    b'<plist version="1.0"><dict>'
+                    b"<key>clientIdentifier</key><string>reader</string>"
+                    b"<key>hostID</key><string>host-a</string>"
+                    b"<key>name</key><string>a.local</string>"
+                    b"<key>registrationDate</key><date>2026-03-24T10:00:02Z</date>"
+                    b"<key>lastSyncDate</key><date>2026-03-24T10:00:02Z</date>"
+                    b"<key>tailIdentifiers</key><array><string>missing-head</string></array>"
+                    b"</dict></plist>"
+                )
+            return make_zip(_EMPTY_XML)
+
+        client.get_file = AsyncMock(side_effect=get_file)
+
+        with pytest.raises(OFError, match="Could not resolve the current OmniFocus delta DAG"):
+            await store.load()
+
+    def test_transaction_chain_resolution_rejects_cycles(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=base+tail0.zip",
+                "20260324100000=head-a+head-b.zip",
+                "20260324100001=head-b+head-a.zip",
+            ]
+        )
+
+        with pytest.raises(OFError, match="Detected a cycle while resolving delta DAG"):
+            reachable_delta_tail_ids(state, ("head-a",))
+
+    def test_transaction_filenames_for_empty_frontier_returns_empty(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(["00000000000000=base+tail0.zip"])
+        assert transaction_filenames_for_frontier(state, ()) == []
 
 
 class TestCache:
@@ -504,11 +640,10 @@ class TestSyncStatus:
         store, client = _make_store(
             tmp_path,
             filenames=[
-                "00000000000000=base.zip",
+                "00000000000000=base+tail123.zip",
                 "20260322154011=client123.client",
             ],
         )
-        await store.load()
 
         async def get_file(name: str) -> bytes:
             if name.endswith(".client"):
@@ -516,6 +651,7 @@ class TestSyncStatus:
             return make_zip(_EMPTY_XML)
 
         client.get_file = AsyncMock(side_effect=get_file)
+        await store.load()
         status = await store.sync_status()
         assert status["current_tail_identifier"] == "tail123"
 
@@ -526,10 +662,29 @@ class TestSyncStatus:
         store, client = _make_store(
             tmp_path,
             filenames=[
-                "00000000000000=base.zip",
+                "00000000000000=base+tail123.zip",
                 "20260322154011=client123.client",
             ],
         )
+
+        valid_client_doc = b"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+"http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>clientIdentifier</key><string>client123</string>
+<key>hostID</key><string>host-123</string>
+<key>name</key><string>air.local</string>
+<key>registrationDate</key><date>2026-03-22T12:00:00Z</date>
+<key>lastSyncDate</key><date>2026-03-22T12:00:00Z</date>
+<key>tailIdentifiers</key><array><string>tail123</string></array>
+</dict></plist>"""
+
+        async def initial_get_file(name: str) -> bytes:
+            if name.endswith(".client"):
+                return valid_client_doc
+            return make_zip(_EMPTY_XML)
+
+        client.get_file = AsyncMock(side_effect=initial_get_file)
         await store.load()
 
         async def get_file(name: str) -> bytes:
@@ -621,7 +776,7 @@ class TestWritePath:
         await store.add_task(name="First task")
         client.list_entries.return_value = [
             "00000000000000=base+tail0.zip",
-            "20260322154011=remote123+tail0.zip",
+            "20260322154011=tail0+remote123.zip",
         ]
         await store.add_task(name="Second task")
         zip_uploads = [
@@ -691,9 +846,9 @@ class TestWritePath:
         assert len(client_uploads) == len(zip_uploads)
         first_name = zip_uploads[0].args[0]
         second_name = zip_uploads[1].args[0]
-        first_head = first_name.split("=", 1)[1].split("+", 1)[0]
-        second_parent = second_name.split("+", 1)[1].removesuffix(".zip")
-        assert second_parent == first_head
+        first_tail = first_name.split("+", 1)[1].removesuffix(".zip")
+        second_parent = second_name.split("=", 1)[1].split("+", 1)[0]
+        assert second_parent == first_tail
 
     @pytest.mark.asyncio
     async def test_add_task_second_delta_updates_name(self, tmp_path: Path) -> None:
@@ -902,7 +1057,7 @@ class TestWritePath:
         assert payload["tail_identifiers"] == ["tail"]
 
     @pytest.mark.asyncio
-    async def test_latest_remote_client_tail_is_preferred_over_latest_delta(
+    async def test_unreachable_remote_client_tail_falls_back_to_latest_delta(
         self, tmp_path: Path
     ) -> None:
         store, _ = _make_store(tmp_path)
@@ -912,7 +1067,7 @@ class TestWritePath:
         state = build_bundle_state(
             [
                 "00000000000000=base+tail0.zip",
-                "20260322154011=delta999+tail0.zip",
+                "20260322154011=tail0+delta999.zip",
                 "20260322154012=appclient.client",
             ]
         )
@@ -926,7 +1081,34 @@ class TestWritePath:
                 host_id="ED325E58-F612-4653-BD34-7006A7D6DD52",
             )
         }
-        assert store._current_tail_id(state, remote_clients) == "client-tail"  # type: ignore[attr-defined]
+        assert current_tail_id(state, remote_clients) == "delta999"
+
+    def test_current_tail_prefers_latest_reachable_delta_over_stale_client_tail(
+        self, tmp_path: Path
+    ) -> None:
+        from omnifocus.sync.client_state import ClientStateDocument
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=base+tail0.zip",
+                "20260322154011=tail0+head1.zip",
+                "20260322154012=head1+head2.zip",
+                "20260322154013=appclient.client",
+            ]
+        )
+        remote_clients = {
+            "appclient": ClientStateDocument(
+                client_identifier="appclient",
+                tail_identifiers=("head1",),
+                registration_date=NOW,
+                last_sync_date=NOW,
+                name="air.local",
+                host_id="ED325E58-F612-4653-BD34-7006A7D6DD52",
+            )
+        }
+        assert current_tail_id(state, remote_clients) == "head2"
 
     def test_current_tail_skips_client_without_tail_and_uses_next_latest(
         self, tmp_path: Path
@@ -960,7 +1142,57 @@ class TestWritePath:
                 tail_identifiers=(),
             ),
         }
-        assert store._current_tail_id(state, remote_clients) == "tail-a"  # type: ignore[attr-defined]
+        assert current_tail_id(state, remote_clients) == "tail-a"
+
+    def test_current_frontier_skips_missing_remote_client_document(self, tmp_path: Path) -> None:
+        from omnifocus.sync.client_state import ClientStateDocument
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+baseline-tail.zip",
+                "20260322154011=missing.client",
+                "20260322154012=present.client",
+            ]
+        )
+        remote_clients = {
+            "present": ClientStateDocument(
+                client_identifier="present",
+                host_id="hostB",
+                name="b.local",
+                registration_date=NOW,
+                last_sync_date=NOW,
+                tail_identifiers=("tail-b",),
+            ),
+        }
+        assert current_frontier_tail_ids(state, remote_clients) == ("tail-b",)
+
+    def test_current_frontier_falls_back_to_latest_client_tail_tuple(self, tmp_path: Path) -> None:
+        from omnifocus.sync.client_state import ClientStateDocument
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot.zip",
+                "20260322154011=clientA.client",
+            ]
+        )
+        remote_clients = {
+            "clientA": ClientStateDocument(
+                client_identifier="clientA",
+                host_id="hostA",
+                name="a.local",
+                registration_date=NOW,
+                last_sync_date=NOW,
+                tail_identifiers=("tail-a", "tail-b"),
+            )
+        }
+        assert current_frontier_tail_ids(state, remote_clients) == (
+            "tail-a",
+            "tail-b",
+        )
 
     @pytest.mark.asyncio
     async def test_empty_add_task_plan_raises(self, tmp_path: Path) -> None:
@@ -982,15 +1214,15 @@ class TestWritePath:
             tmp_path,
             filenames=[
                 "00000000000000=base+tail0.zip",
-                "20260322154011=head1+tail0.zip",
-                "20260322154012=head2+head1.zip",
+                "20260322154011=tail0+head1.zip",
+                "20260322154012=head1+head2.zip",
             ],
         )
         client.get_file = AsyncMock(side_effect=lambda name: name.encode("utf-8"))
         files = await store.fetch_latest_deltas(count=2)
         assert [name for name, _ in files] == [
-            "20260322154011=head1+tail0.zip",
-            "20260322154012=head2+head1.zip",
+            "20260322154011=tail0+head1.zip",
+            "20260322154012=head1+head2.zip",
         ]
 
     @pytest.mark.asyncio
@@ -1005,7 +1237,7 @@ class TestWritePath:
             tmp_path,
             filenames=[
                 "00000000000000=base+tail0.zip",
-                "20260322154011=head1+tail0.zip",
+                "20260322154011=tail0+head1.zip",
                 "20260322154012=client-a.client",
             ],
         )
@@ -1029,7 +1261,7 @@ class TestWritePath:
 
         client.get_file = AsyncMock(side_effect=get_file)
         files = await store.fetch_latest_deltas(client_id="client-a")
-        assert [name for name, _ in files] == ["20260322154011=head1+tail0.zip"]
+        assert [name for name, _ in files] == ["20260322154011=tail0+head1.zip"]
 
     @pytest.mark.asyncio
     async def test_fetch_latest_deltas_unknown_client_raises(self, tmp_path: Path) -> None:
@@ -1037,7 +1269,7 @@ class TestWritePath:
             tmp_path,
             filenames=[
                 "00000000000000=base+tail0.zip",
-                "20260322154011=head1+tail0.zip",
+                "20260322154011=tail0+head1.zip",
             ],
         )
         with pytest.raises(OFError, match="No client state found"):
@@ -1143,7 +1375,7 @@ class TestWritePath:
             tmp_path,
             filenames=[
                 "00000000000000=base+tail0.zip",
-                "20260322154011=head1+tail0.zip",
+                "20260322154011=tail0+head1.zip",
             ],
         )
 
@@ -1154,7 +1386,7 @@ class TestWritePath:
 
         client.get_file = AsyncMock(side_effect=get_file)
         filename, contents_xml = await store.decrypt_latest_delta()
-        assert filename == "20260322154011=head1+tail0.zip"
+        assert filename == "20260322154011=tail0+head1.zip"
         assert contents_xml == xml
 
     @pytest.mark.asyncio
@@ -1171,7 +1403,7 @@ class TestWritePath:
             tmp_path,
             filenames=[
                 "00000000000000=base+tail0.zip",
-                "20260322154011=head1+tail0.zip",
+                "20260322154011=tail0+head1.zip",
             ],
         )
 
@@ -1602,7 +1834,7 @@ class TestWritePath:
                 tail_identifiers=("shared-tail",),
             ),
         }
-        assert store._current_tail_id(state, remote_clients) == "shared-tail"  # noqa: SLF001
+        assert current_tail_id(state, remote_clients) == "shared-tail"
 
     def test_current_tail_prefers_latest_client_when_clients_disagree(self, tmp_path: Path) -> None:
         from omnifocus.sync.client_state import ClientStateDocument
@@ -1634,7 +1866,360 @@ class TestWritePath:
                 tail_identifiers=("tail-b",),
             ),
         }
-        assert store._current_tail_id(state, remote_clients) == "tail-b"  # noqa: SLF001
+        assert current_tail_id(state, remote_clients) == "tail-b"
+
+    def test_current_tail_uses_latest_delta_without_clients(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=tail0+head1.zip",
+            ]
+        )
+        assert current_tail_id(state, {}) == "head1"
+
+    def test_current_tail_uses_latest_delta_when_baseline_has_no_tail(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot.zip",
+                "20260322154011=tail0+head1.zip",
+            ]
+        )
+        assert current_tail_id(state, {}) == "head1"
+
+    def test_current_tail_uses_baseline_tail_without_clients_or_deltas(
+        self, tmp_path: Path
+    ) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(["00000000000000=snapshot+tail0.zip"])
+        assert current_tail_id(state, {}) == "tail0"
+
+    def test_current_tail_returns_none_when_bundle_has_no_tail_information(
+        self, tmp_path: Path
+    ) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(["00000000000000=snapshot.zip"])
+        assert current_tail_id(state, {}) is None
+
+    def test_tail_reachable_accepts_baseline_tail(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=tail0+head1.zip",
+            ]
+        )
+        assert tail_reachable_from_baseline(state, "tail0") is True
+
+    def test_reachable_delta_tail_ids_skips_baseline_tail(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=tail0+head1.zip",
+            ]
+        )
+        assert reachable_delta_tail_ids(state, ("tail0", "head1")) == {"head1"}
+
+    def test_reachable_delta_tail_ids_returns_selected_set(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=tail0+head1.zip",
+                "20260322154012=head1+head2.zip",
+            ]
+        )
+        assert reachable_delta_tail_ids(state, ("head2",)) == {
+            "head1",
+            "head2",
+        }
+
+    def test_reachable_delta_tail_ids_ignores_already_selected_tail(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=tail0+head1.zip",
+                "20260322154012=head1+head2.zip",
+            ]
+        )
+        assert reachable_delta_tail_ids(state, ("head1", "head2")) == {
+            "head1",
+            "head2",
+        }
+
+    def test_tail_reachable_uses_inner_baseline_branch(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=tail0+head1.zip",
+            ]
+        )
+        assert tail_reachable_from_baseline(state, "head1") is True
+
+    def test_tail_reachable_uses_memoized_parent_result(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=tail0+head1.zip",
+                "20260322154012=head1+head2.zip",
+                "20260322154013=head1+head2+head3.zip",
+            ]
+        )
+        assert tail_reachable_from_baseline(state, "head3") is True
+
+    def test_tail_reachable_returns_true_without_baseline_tail_or_deltas(
+        self, tmp_path: Path
+    ) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        no_tail_state = build_bundle_state(["00000000000000=snapshot.zip"])
+        assert tail_reachable_from_baseline(no_tail_state, "anything") is True  # noqa: SLF001
+
+        no_delta_state = build_bundle_state(["00000000000000=snapshot+tail0.zip"])
+        assert tail_reachable_from_baseline(no_delta_state, "tail0") is True
+
+    def test_tail_reachable_rejects_cycles(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=head2+head1.zip",
+                "20260322154012=head1+head2.zip",
+            ]
+        )
+        assert tail_reachable_from_baseline(state, "head1") is False
+
+    def test_current_tail_skips_unreachable_latest_client_tail(self, tmp_path: Path) -> None:
+        from omnifocus.sync.client_state import ClientStateDocument
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=tail0+head1.zip",
+                "20260322154012=clientA.client",
+                "20260322154013=clientB.client",
+            ]
+        )
+        remote_clients = {
+            "clientA": ClientStateDocument(
+                client_identifier="clientA",
+                host_id="hostA",
+                name="a.local",
+                registration_date=NOW,
+                last_sync_date=NOW,
+                tail_identifiers=("head1",),
+            ),
+            "clientB": ClientStateDocument(
+                client_identifier="clientB",
+                host_id="hostB",
+                name="b.local",
+                registration_date=NOW,
+                last_sync_date=NOW,
+                tail_identifiers=("missing-head",),
+            ),
+        }
+        assert current_tail_id(state, remote_clients) == "head1"
+
+    def test_current_tail_skips_client_without_tail_in_delta_mode(self, tmp_path: Path) -> None:
+        from omnifocus.sync.client_state import ClientStateDocument
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=tail0+head1.zip",
+                "20260322154012=clientA.client",
+            ]
+        )
+        remote_clients = {
+            "clientA": ClientStateDocument(
+                client_identifier="clientA",
+                host_id="hostA",
+                name="a.local",
+                registration_date=NOW,
+                last_sync_date=NOW,
+                tail_identifiers=(),
+            )
+        }
+        assert current_tail_id(state, remote_clients) == "head1"
+
+    def test_current_tail_falls_back_to_baseline_when_no_reachable_delta_exists(
+        self, tmp_path: Path
+    ) -> None:
+        from omnifocus.sync.client_state import ClientStateDocument
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=missing-parent+orphan-head.zip",
+                "20260322154012=clientA.client",
+            ]
+        )
+        remote_clients = {
+            "clientA": ClientStateDocument(
+                client_identifier="clientA",
+                host_id="hostA",
+                name="a.local",
+                registration_date=NOW,
+                last_sync_date=NOW,
+                tail_identifiers=("missing-head",),
+            )
+        }
+        assert current_tail_id(state, remote_clients) == "tail0"
+
+    def test_current_tail_uses_reachable_client_tail_when_latest_delta_is_unreachable(
+        self, tmp_path: Path
+    ) -> None:
+        from omnifocus.sync.client_state import ClientStateDocument
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=tail0+reachable-head.zip",
+                "20260322154012=missing-parent+orphan-head.zip",
+                "20260322154013=clientA.client",
+            ]
+        )
+        remote_clients = {
+            "clientA": ClientStateDocument(
+                client_identifier="clientA",
+                host_id="hostA",
+                name="a.local",
+                registration_date=NOW,
+                last_sync_date=NOW,
+                tail_identifiers=("reachable-head",),
+            )
+        }
+        assert current_tail_id(state, remote_clients) == "reachable-head"
+
+    def test_current_tail_skips_empty_client_tail_and_falls_back_to_baseline(
+        self, tmp_path: Path
+    ) -> None:
+        from omnifocus.sync.client_state import ClientStateDocument
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=missing-parent+orphan-head.zip",
+                "20260322154012=clientA.client",
+            ]
+        )
+        remote_clients = {
+            "clientA": ClientStateDocument(
+                client_identifier="clientA",
+                host_id="hostA",
+                name="a.local",
+                registration_date=NOW,
+                last_sync_date=NOW,
+                tail_identifiers=(),
+            )
+        }
+        assert current_tail_id(state, remote_clients) == "tail0"
+
+    def test_tail_depends_on_rejects_same_tail(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(["00000000000000=snapshot+tail0.zip"])
+        assert tail_depends_on(state, "tail0", "tail0") is False
+
+    def test_tail_depends_on_returns_false_for_missing_tail(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(["00000000000000=snapshot+tail0.zip"])
+        assert tail_depends_on(state, "missing", "tail0") is False
+
+    def test_tail_depends_on_breaks_cycles_with_visited_set(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=head2+head1.zip",
+                "20260322154012=head1+head2.zip",
+            ]
+        )
+        assert tail_depends_on(state, "head1", "missing") is False
+
+    def test_tail_depends_on_returns_true_for_direct_parent(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=tail0+head1.zip",
+            ]
+        )
+        assert tail_depends_on(state, "head1", "tail0") is True
+
+    def test_maximal_tail_ids_drops_ancestor_tails(self, tmp_path: Path) -> None:
+        from omnifocus.sync.protocol import build_bundle_state
+
+        store, _ = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=snapshot+tail0.zip",
+                "20260322154011=tail0+head1.zip",
+                "20260322154012=head1+head2.zip",
+            ]
+        )
+        maximal = maximal_tail_ids(state, ("head1", "head2"))
+        assert maximal == ("head2",)
+
+    def test_maybe_decrypt_returns_plaintext_without_doc_keys(self, tmp_path: Path) -> None:
+        store, _ = _make_store(tmp_path)
+        payload = b"plain"
+        assert store._maybe_decrypt(payload, None) == payload  # noqa: SLF001
+
+    def test_maybe_decrypt_returns_plaintext_for_unencrypted_file_in_encrypted_bundle(
+        self, tmp_path: Path
+    ) -> None:
+        from typing import cast
+
+        store, _ = _make_store(tmp_path)
+        payload = b"plain"
+        doc_keys = cast(dict[int, tuple[bytes, bytes]], {1: (b"a", b"b")})
+        assert store._maybe_decrypt(payload, doc_keys) == payload  # noqa: SLF001
 
     def test_select_client_template_returns_none_without_remote_clients(
         self, tmp_path: Path

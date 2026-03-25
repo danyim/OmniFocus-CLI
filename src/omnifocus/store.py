@@ -76,11 +76,15 @@ from omnifocus.sync.client_state import (
     parse_client_state_plist,
     serialise_client_state_plist,
 )
+from omnifocus.sync.graph import (
+    current_frontier_tail_ids,
+    current_tail_id,
+    transaction_filenames_for_frontier,
+)
 from omnifocus.sync.protocol import (
     BundleState,
     ClientStateRef,
     build_bundle_state,
-    classify_bundle_files,
 )
 from omnifocus.sync.webdav import WebDAVClient
 from omnifocus.writer import (
@@ -226,6 +230,7 @@ class OFocusStore:
         """
         entries = await self._client.list_entries()
         bundle_fingerprint = _bundle_fingerprint(entries)
+        bundle_state = build_bundle_state(entries)
 
         if not force_refresh:
             cached = self._load_from_cache()
@@ -237,8 +242,12 @@ class OFocusStore:
                 log.debug("Cache hit for bundle fingerprint %s", bundle_fingerprint)
                 return cached.model
 
+        remote_clients = await self._load_remote_client_documents(bundle_state)
+        frontier_tail_identifiers = current_frontier_tail_ids(bundle_state, remote_clients)
+        tx_names = transaction_filenames_for_frontier(bundle_state, frontier_tail_identifiers)
         return await self._sync_and_build(
-            filenames=entries,
+            baseline_name=bundle_state.baseline.filename,
+            tx_names=tx_names,
             bundle_fingerprint=bundle_fingerprint,
         )
 
@@ -274,7 +283,7 @@ class OFocusStore:
         if cached and cache_valid:
             try:
                 entries = remote_entries or await self._client.list_entries()
-                current_tail_identifier = self._current_tail_id(
+                current_tail_identifier = current_tail_id(
                     build_bundle_state(entries),
                     await self._load_remote_client_documents(build_bundle_state(entries)),
                 )
@@ -310,8 +319,8 @@ class OFocusStore:
                 {
                     "filename": delta.filename,
                     "timestamp": delta.timestamp.isoformat(),
-                    "head_id": delta.head_id,
-                    "parent_tail_id": delta.parent_tail_id,
+                    "tail_id": delta.tail_id,
+                    "parent_tail_ids": list(delta.parent_tail_ids),
                 }
                 for delta in state.deltas
             ],
@@ -354,7 +363,7 @@ class OFocusStore:
             if document is None or not document.tail_identifiers:
                 raise OFError(f"Client {client_id!r} has no advertised tail identifier")
             target_tail = document.tail_identifiers[0]
-            deltas = [delta for delta in deltas if delta.head_id == target_tail]
+            deltas = [delta for delta in deltas if delta.tail_id == target_tail]
             if not deltas:
                 raise OFError(
                     f"No delta ZIP found for client {client_id!r} and tail {target_tail!r}"
@@ -631,11 +640,11 @@ class OFocusStore:
     async def _sync_and_build(
         self,
         *,
-        filenames: list[str],
+        baseline_name: str,
+        tx_names: list[str],
         bundle_fingerprint: BundleFingerprint,
     ) -> OFModel:
         """Download the bundle, decrypt if needed, parse, cache, and return."""
-        baseline_name, tx_names = classify_bundle_files(filenames)
         log.debug("Bundle: baseline=%s  transactions=%d", baseline_name, len(tx_names))
 
         log.debug("Downloading baseline %s", baseline_name)
@@ -687,7 +696,7 @@ class OFocusStore:
         state = self._load_writer_state()
         identity = self._load_writer_identity()
         remote_clients = await self._load_remote_client_documents(bundle_state)
-        current_accepted_tail = self._current_tail_id(bundle_state, remote_clients)
+        current_accepted_tail = current_tail_id(bundle_state, remote_clients)
         if current_accepted_tail is None:
             raise OFError("Bundle has no known tail identifier")
         next_tail_id = generate_id()
@@ -842,22 +851,6 @@ class OFocusStore:
         if client_id is not None:
             refs = [ref for ref in refs if ref.client_id == client_id]
         return refs[-1] if refs else None
-
-    def _current_tail_id(
-        self,
-        state: BundleState,
-        remote_clients: dict[str, ClientStateDocument],
-    ) -> str | None:
-        """Return the best-known current tail identifier."""
-        for ref in reversed(state.clients):
-            document = remote_clients.get(ref.client_id)
-            if document is not None and document.tail_identifiers:
-                return document.tail_identifiers[0]
-        if state.deltas:
-            return state.deltas[-1].head_id
-        if state.baseline.tail_id:
-            return state.baseline.tail_id
-        return None
 
     def _build_writer_state(
         self,

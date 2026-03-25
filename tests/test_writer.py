@@ -9,6 +9,8 @@ import xml.etree.ElementTree as ET
 import zipfile
 from datetime import UTC, datetime
 
+import pytest
+
 from omnifocus.models import Folder, Project, Task
 from omnifocus.writer import (
     AddFolderPlan,
@@ -670,14 +672,14 @@ class TestTaskWriter:
     def test_add_task_defaults_to_app_rebase(self) -> None:
         writer = TaskWriter(head_id="tail01", parent_tail_id="accepted-tail")
         plan = writer.add_task("Test task")
-        assert plan.deltas[0].head_id == "accepted-tail"
+        assert plan.deltas[0].parent_tail_id == "accepted-tail"
 
-    def test_add_task_with_app_rebase_reuses_accepted_tail_as_first_head(self) -> None:
+    def test_add_task_with_app_rebase_reuses_accepted_tail_as_first_parent(self) -> None:
         writer = TaskWriter(head_id="tail01", parent_tail_id="accepted-tail")
         plan = writer.add_task("Test task", chain_shape="app_rebase")
-        assert plan.deltas[0].head_id == "accepted-tail"
-        assert plan.deltas[1].head_id == plan.deltas[0].parent_tail_id
-        assert plan.deltas[1].parent_tail_id != "accepted-tail"
+        assert plan.deltas[0].parent_tail_id == "accepted-tail"
+        assert plan.deltas[1].parent_tail_id == plan.deltas[0].head_id
+        assert plan.deltas[1].head_id != "accepted-tail"
 
     def test_add_task_xml_has_skeleton_then_name_update(self) -> None:
         writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
@@ -738,10 +740,10 @@ class TestTaskWriter:
             chain_shape="app_rebase",
         )
         assert len(plan.deltas) == 5
-        assert plan.deltas[2].head_id == plan.deltas[1].parent_tail_id
+        assert plan.deltas[2].parent_tail_id == plan.deltas[1].head_id
         assert plan.deltas[2].parent_tail_id != plan.deltas[2].head_id
-        assert plan.deltas[3].head_id == plan.deltas[2].parent_tail_id
-        assert plan.deltas[4].head_id == plan.deltas[3].parent_tail_id
+        assert plan.deltas[3].parent_tail_id == plan.deltas[2].head_id
+        assert plan.deltas[4].parent_tail_id == plan.deltas[3].head_id
 
     def test_add_task_with_project_parent(self) -> None:
         writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
@@ -1042,4 +1044,9 @@ class TestTaskWriter:
     def test_writer_uses_explicit_parent_without_guessing(self) -> None:
         writer = TaskWriter(head_id="new-tail-123", parent_tail_id="remote-tail-123")
         plan = writer.add_task("Test task")
-        assert plan.deltas[0].head_id == "remote-tail-123"
+        assert plan.deltas[0].parent_tail_id == "remote-tail-123"
+
+    def test_add_task_rejects_unknown_chain_shape(self) -> None:
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        with pytest.raises(ValueError, match="Unsupported chain shape"):
+            writer.add_task("Test task", chain_shape="bogus")

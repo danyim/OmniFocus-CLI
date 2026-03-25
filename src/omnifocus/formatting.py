@@ -1,6 +1,6 @@
 """Output formatters for CLI commands.
 
-Provides table, tree, and JSON renderers for tasks and projects using
+Provides table, tree, and JSON renderers for tasks, projects, and folders using
 :mod:`rich`.  All renderers write directly to stdout unless a ``Console``
 is injected (for testability).
 
@@ -89,7 +89,7 @@ def render_project_tree(
     status_filter: str = "active",
     console: Console | None = None,
 ) -> None:
-    """Print a hierarchical folder/project tree.
+    """Print projects grouped by folder path.
 
     Args:
         folders: All folders from the model.
@@ -100,50 +100,25 @@ def render_project_tree(
     """
     out = console or _DEFAULT_CONSOLE
 
-    filtered_projects = [
-        p for p in projects.values() if status_filter == "all" or p.status == status_filter
-    ]
+    data = build_project_group_data(folders, projects, status_filter=status_filter)
+    root_tree = Tree("[bold]Projects[/bold]")
 
-    root_tree = Tree("[bold]OmniFocus[/bold]")
+    for group in cast(list[dict[str, Any]], data["groups"]):
+        branch = root_tree.add(f"[bold]{group['label']}[/bold]")
+        for project in cast(list[dict[str, Any]], group["projects"]):
+            branch.add(_project_tree_label(project))
 
-    # Build folder sub-trees (only top-level folders for now)
-    folder_nodes: dict[str, Tree] = {}
+    no_folder_projects = cast(list[dict[str, Any]], data["no_folder_projects"])
+    if no_folder_projects:
+        no_folder_branch = root_tree.add("[dim]No Folder[/dim]")
+        for project in no_folder_projects:
+            no_folder_branch.add(_project_tree_label(project))
 
-    def get_or_create_folder_node(fid: str) -> Tree:
-        if fid in folder_nodes:
-            return folder_nodes[fid]
-        folder = folders.get(fid)
-        if folder is None:
-            node = root_tree.add(f"[dim]({fid})[/dim]")
-            folder_nodes[fid] = node
-            return node
-        # Recurse to ensure parent is created first
-        if folder.parent_folder_id:
-            parent_node = get_or_create_folder_node(folder.parent_folder_id)
-        else:
-            parent_node = root_tree
-        node = parent_node.add(f"[bold]{folder.name}[/bold]")
-        folder_nodes[fid] = node
-        return node
-
-    # Create all folder nodes
-    for fid in sorted(folders.keys(), key=lambda x: folders[x].rank):
-        get_or_create_folder_node(fid)
-
-    # Slot projects under their folder nodes
-    no_folder_node: Tree | None = None
-
-    for project in sorted(filtered_projects, key=lambda p: p.rank):
-        status_icon = _project_icon(project.status)
-        flag_icon = " ★" if project.flagged else ""
-        label = f"{status_icon} {project.name}{flag_icon}"
-
-        if project.folder_id and project.folder_id in folder_nodes:
-            folder_nodes[project.folder_id].add(label)
-        else:
-            if no_folder_node is None:
-                no_folder_node = root_tree.add("[dim]No Folder[/dim]")
-            no_folder_node.add(label)
+    dangling_folder_projects = cast(list[dict[str, Any]], data["dangling_folder_projects"])
+    if dangling_folder_projects:
+        dangling_branch = root_tree.add("[dim]Missing Folder[/dim]")
+        for project in dangling_folder_projects:
+            dangling_branch.add(_project_tree_label(project, show_missing_folder=True))
 
     out.print(root_tree)
 
@@ -225,6 +200,59 @@ def build_folder_tree_data(
     ]
     return {
         "folders": roots,
+        "no_folder_projects": no_folder_projects,
+        "dangling_folder_projects": dangling_folder_projects,
+    }
+
+
+def build_project_group_data(
+    folders: dict[str, Folder],
+    projects: dict[str, Project],
+    *,
+    status_filter: str = "active",
+) -> dict[str, Any]:
+    """Build a project-centric grouping keyed by effective folder path."""
+    filtered_projects = [
+        project
+        for project in projects.values()
+        if status_filter == "all" or project.status == status_filter
+    ]
+
+    groups: dict[str, dict[str, Any]] = {}
+    no_folder_projects: list[dict[str, Any]] = []
+    dangling_folder_projects: list[dict[str, Any]] = []
+
+    for project in sorted(
+        filtered_projects, key=lambda item: (item.rank, item.name.lower(), item.id)
+    ):
+        summary = _project_to_dict(project)
+        if project.folder_id is None:
+            no_folder_projects.append(summary)
+            continue
+        if project.folder_id not in folders:
+            dangling_folder_projects.append(summary)
+            continue
+
+        group_label = _folder_path_label(project.folder_id, folders)
+        group = groups.setdefault(
+            group_label,
+            {
+                "label": group_label,
+                "sort_key": _folder_path_sort_key(project.folder_id, folders),
+                "projects": [],
+            },
+        )
+        group["projects"].append(summary)
+
+    ordered_groups = sorted(
+        groups.values(),
+        key=lambda item: cast(tuple[tuple[int, str, str], ...], item["sort_key"]),
+    )
+    for group in ordered_groups:
+        group.pop("sort_key", None)
+
+    return {
+        "groups": ordered_groups,
         "no_folder_projects": no_folder_projects,
         "dangling_folder_projects": dangling_folder_projects,
     }
@@ -334,3 +362,57 @@ def _project_to_dict(project: Project) -> dict[str, Any]:
 def _folder_to_dict(folder: Folder) -> dict[str, Any]:
     d = dataclasses.asdict(folder)
     return d
+
+
+def _folder_ancestry(folder_id: str, folders: dict[str, Folder]) -> list[Folder]:
+    """Return folder ancestry from root to the requested folder."""
+    ancestry: list[Folder] = []
+    current_id: str | None = folder_id
+    seen: set[str] = set()
+    while current_id is not None and current_id not in seen:
+        seen.add(current_id)
+        folder = folders.get(current_id)
+        if folder is None:
+            break
+        ancestry.append(folder)
+        current_id = folder.parent_folder_id
+    ancestry.reverse()
+    return ancestry
+
+
+def _folder_path_label(folder_id: str, folders: dict[str, Folder]) -> str:
+    """Return a human-facing folder path label."""
+    ancestry = _folder_ancestry(folder_id, folders)
+    if not ancestry:
+        return f"({folder_id})"
+    return " / ".join(folder.name for folder in ancestry)
+
+
+def _folder_path_sort_key(
+    folder_id: str,
+    folders: dict[str, Folder],
+) -> tuple[tuple[int, str, str], ...]:
+    """Return a stable sort key for a folder path."""
+    ancestry = _folder_ancestry(folder_id, folders)
+    return tuple((folder.rank, folder.name.lower(), folder.id) for folder in ancestry)
+
+
+def _project_tree_label(
+    project: dict[str, Any],
+    *,
+    show_missing_folder: bool = False,
+) -> str:
+    """Return the rich tree label used by the grouped projects view."""
+    status = str(project["status"])
+    label = f"{_project_icon(status)} {project['name']} [dim]({project['id']})[/dim]"
+    if bool(project["singleton"]):
+        label += " singleton"
+    if bool(project["flagged"]):
+        label += " ★"
+    if project.get("start"):
+        label += f" [dim]start {str(project['start'])[:10]}[/dim]"
+    if project.get("due"):
+        label += f" [dim]due {str(project['due'])[:10]}[/dim]"
+    if show_missing_folder and project.get("folder_id"):
+        label += f" [dim]-> {project['folder_id']}[/dim]"
+    return label

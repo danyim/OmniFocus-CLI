@@ -17,6 +17,7 @@ from omnifocus.parser import (
     _bool,
     _idref,
     _int,
+    _materialize_reference_snapshot,
     _parse_dt_local,
     _parse_dt_utc,
     _text,
@@ -445,6 +446,124 @@ _PROJECT_DIRECT_FOLDER_XML = """\
 </omnifocus>
 """
 
+_REFERENCE_FOLDER_BASE_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <folder id="eYAcOM9PHFo">
+    <folder/>
+    <added>2024-12-15T19:11:43.652Z</added>
+    <name>💻 Work</name>
+    <note/>
+    <rank>240802395</rank>
+    <hidden/>
+    <modified>2026-01-23T22:16:42.744Z</modified>
+  </folder>
+  <folder id="ptPMm-uIiPn">
+    <folder/>
+    <added>2026-01-07T02:47:39.465Z</added>
+    <name>🔄 Routines</name>
+    <note/>
+    <rank>2147136693</rank>
+    <hidden/>
+    <modified>2026-01-23T22:25:10.259Z</modified>
+  </folder>
+</omnifocus>
+"""
+
+_REFERENCE_FOLDER_TX_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <folder id="eYAcOM9PHFo" op="reference">
+    <reference-snapshot>
+      <folder/>
+      <added>2024-12-15T19:11:43.652Z</added>
+      <modified>2026-03-24T13:46:44.118Z</modified>
+      <name>💻 Work</name>
+      <note/>
+      <rank>240802395</rank>
+      <hidden/>
+    </reference-snapshot>
+  </folder>
+  <folder id="ptPMm-uIiPn" op="reference">
+    <reference-snapshot>
+      <folder/>
+      <added>2026-01-07T02:47:39.465Z</added>
+      <modified>2026-03-24T08:02:16.197Z</modified>
+      <name>🔄 Routines</name>
+      <note/>
+      <rank>2147136693</rank>
+      <hidden/>
+    </reference-snapshot>
+  </folder>
+  <task id="jWkUhVYC7Qx" op="update">
+    <project>
+      <folder idref="ptPMm-uIiPn"/>
+      <singleton>true</singleton>
+      <status>active</status>
+    </project>
+    <inbox>false</inbox>
+    <task/>
+    <added>2026-01-07T02:59:32.726Z</added>
+    <modified>2026-03-24T08:02:16.197Z</modified>
+    <name>💻 Work</name>
+    <rank>1610612736</rank>
+  </task>
+</omnifocus>
+"""
+
+_PROJECT_TO_TASK_BASE_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <folder id="jBfVJLuNwe1">
+    <folder idref="eYAcOM9PHFo"/>
+    <added>2024-12-15T19:22:37.315Z</added>
+    <name>🔴 SECURITUM</name>
+    <rank>1073741824</rank>
+    <modified>2026-03-24T13:46:13.924Z</modified>
+  </folder>
+  <task id="pI8a3Bp_6Wy">
+    <project>
+      <folder idref="eYAcOM9PHFo"/>
+      <status>active</status>
+      <singleton>true</singleton>
+    </project>
+    <inbox>false</inbox>
+    <task/>
+    <added>2025-05-24T09:34:43.638Z</added>
+    <name>🔴 SECURITUM (CISO)</name>
+    <rank>1</rank>
+    <modified>2026-03-24T13:41:53.335Z</modified>
+  </task>
+  <task id="JkUWGlVomMw">
+    <project>
+      <folder idref="jBfVJLuNwe1"/>
+      <status>active</status>
+      <singleton>false</singleton>
+    </project>
+    <inbox>false</inbox>
+    <task/>
+    <added>2026-03-24T13:41:53.335Z</added>
+    <name>Migracja starej infry na nową</name>
+    <rank>538220087</rank>
+    <order>parallel</order>
+    <modified>2026-03-24T13:41:53.335Z</modified>
+  </task>
+</omnifocus>
+"""
+
+_PROJECT_TO_TASK_TX_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="JkUWGlVomMw" op="update">
+    <project/>
+    <task idref="pI8a3Bp_6Wy"/>
+    <added>2026-03-24T13:41:53.335Z</added>
+    <modified>2026-03-24T13:46:29.682Z</modified>
+    <rank>2147483646</rank>
+  </task>
+</omnifocus>
+"""
+
 _REPEATED_NAME_XML = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
@@ -617,6 +736,58 @@ class TestTransactionMerge:
         assert model.tasks["new1"].name == "Created via updates"
         assert model.tasks["new1"].due is not None
         assert model.tasks["new1"].due.isoformat() == "2026-01-10T19:00:00"
+
+    def test_reference_snapshot_preserves_folder_entities(self) -> None:
+        model = build_model(
+            make_zip(_REFERENCE_FOLDER_BASE_XML),
+            [make_zip(_REFERENCE_FOLDER_TX_XML)],
+        )
+        assert model.folders["eYAcOM9PHFo"].name == "💻 Work"
+        assert model.folders["ptPMm-uIiPn"].name == "🔄 Routines"
+        assert model.projects["jWkUhVYC7Qx"].folder_id == "ptPMm-uIiPn"
+
+    def test_empty_project_update_turns_project_into_task(self) -> None:
+        model = build_model(
+            make_zip(_PROJECT_TO_TASK_BASE_XML),
+            [make_zip(_PROJECT_TO_TASK_TX_XML)],
+        )
+        assert "JkUWGlVomMw" not in model.projects
+        assert model.tasks["JkUWGlVomMw"].parent_task_id == "pI8a3Bp_6Wy"
+        assert model.tasks["JkUWGlVomMw"].project_id == "pI8a3Bp_6Wy"
+        assert model.tasks["JkUWGlVomMw"].name == "Migracja starej infry na nową"
+
+    def test_reference_snapshot_can_seed_new_folder_without_baseline_entry(self) -> None:
+        model = build_model(
+            make_zip("""\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2"/>
+"""),
+            [
+                make_zip("""\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <folder id="gi7RylwrvLG" op="reference">
+    <reference-snapshot>
+      <folder/>
+      <added>2026-03-24T22:03:58.719Z</added>
+      <modified>2026-03-24T22:04:23.544Z</modified>
+      <name>dupa</name>
+      <note/>
+      <rank>2147396910</rank>
+      <hidden/>
+    </reference-snapshot>
+  </folder>
+</omnifocus>
+"""),
+            ],
+        )
+        assert model.folders["gi7RylwrvLG"].name == "dupa"
+
+    def test_reference_without_snapshot_is_returned_unchanged(self) -> None:
+        elem = ET.fromstring(  # noqa: S314
+            f'<folder xmlns="{NS[1:-1]}" id="gi7RylwrvLG" op="reference" />'
+        )
+        assert _materialize_reference_snapshot(elem) is elem
 
     def test_update_without_existing_entry_is_indexed(self) -> None:
         base = make_zip("""\

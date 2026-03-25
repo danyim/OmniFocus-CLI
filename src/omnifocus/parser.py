@@ -186,7 +186,15 @@ def _merge_update_element(existing: ET.Element, update: ET.Element) -> ET.Elemen
 
         # ``<project>`` acts as a nested container whose fields are often updated
         # partially. Replacing the whole child would drop the earlier folder link.
+        # A self-closing ``<project/>`` is different: it changes a project back
+        # into a plain task and must replace the prior nested payload entirely.
         if child.tag == _tag("project"):
+            if len(list(child)) == 0:
+                merged.remove(existing_child)
+                cloned_child = deepcopy(child)
+                merged.append(cloned_child)
+                merged_children[child.tag] = cloned_child
+                continue
             nested = _merge_update_element(existing_child, child)
             merged.remove(existing_child)
             merged.append(nested)
@@ -198,6 +206,24 @@ def _merge_update_element(existing: ET.Element, update: ET.Element) -> ET.Elemen
         merged.append(cloned_child)
         merged_children[child.tag] = cloned_child
     return merged
+
+
+def _materialize_reference_snapshot(elem: ET.Element) -> ET.Element:
+    """Return a concrete element built from a ``reference-snapshot`` wrapper.
+
+    OmniFocus transactions sometimes ship ``op="reference"`` elements whose
+    actual fields live under ``<reference-snapshot>``. Storing the wrapper
+    directly would discard fields such as ``<name>`` or parent ``idref`` links.
+    """
+    snapshot = elem.find(_tag("reference-snapshot"))
+    if snapshot is None:
+        return elem
+
+    attrs = {key: value for key, value in elem.attrib.items() if key != "op"}
+    materialized = ET.Element(elem.tag, attrs)
+    for child in snapshot:
+        materialized.append(deepcopy(child))
+    return materialized
 
 
 def _index_elements(root: ET.Element, index: _RawIndex) -> None:
@@ -224,6 +250,15 @@ def _index_elements(root: ET.Element, index: _RawIndex) -> None:
                 bucket[eid] = elem
             else:
                 bucket[eid] = _merge_update_element(existing, elem)
+            continue
+
+        if op == "reference":
+            reference = _materialize_reference_snapshot(elem)
+            existing = bucket.get(eid)
+            if existing is None:
+                bucket[eid] = reference
+            else:
+                bucket[eid] = _merge_update_element(existing, reference)
             continue
 
         if op == "delete":
