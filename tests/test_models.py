@@ -102,6 +102,13 @@ class TestTag:
         t = Tag(id="t2", name="@desk", parent_tag_id="t1", rank=20)
         assert t.parent_tag_id == "t1"
 
+    def test_optional_metadata_defaults(self) -> None:
+        t = _tag()
+        assert t.added is None
+        assert t.modified is None
+        assert t.note == ""
+        assert t.hidden is None
+
 
 class TestProject:
     def test_active(self) -> None:

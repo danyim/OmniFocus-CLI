@@ -1,8 +1,8 @@
 """Output formatters for CLI commands.
 
-Provides table, tree, and JSON renderers for tasks, projects, and folders using
-:mod:`rich`.  All renderers write directly to stdout unless a ``Console``
-is injected (for testability).
+Provides table, tree, and JSON renderers for tasks, projects, folders, and
+tags using :mod:`rich`. All renderers write directly to stdout unless a
+``Console`` is injected (for testability).
 
 Usage::
 
@@ -26,7 +26,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 
-from omnifocus.models import Folder, Project, Task
+from omnifocus.models import Folder, Project, Tag, Task
 
 _DEFAULT_CONSOLE = Console()
 
@@ -314,6 +314,81 @@ def render_folders_json(
 
 
 # ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+
+def build_tag_tree_data(
+    tags: dict[str, Tag],
+    *,
+    include_hidden: bool = False,
+) -> dict[str, Any]:
+    """Build a nested tag hierarchy for JSON and CLI output.
+
+    Args:
+        tags: All tags from the model.
+        include_hidden: When ``True``, include dropped/hidden tags.
+
+    Returns:
+        A dict containing nested tag nodes under ``tags``.
+    """
+    visible_tags = [tag for tag in tags.values() if include_hidden or tag.hidden is None]
+    tag_nodes: dict[str, dict[str, Any]] = {
+        tag.id: {"tag": _tag_to_dict(tag), "children": []} for tag in visible_tags
+    }
+
+    roots: list[dict[str, Any]] = []
+    for tag in sorted(visible_tags, key=lambda item: (item.rank, item.name.lower(), item.id)):
+        node = tag_nodes[tag.id]
+        if tag.parent_tag_id and tag.parent_tag_id in tag_nodes:
+            tag_nodes[tag.parent_tag_id]["children"].append(node)
+        else:
+            roots.append(node)
+    return {"tags": roots}
+
+
+def render_tag_tree(
+    tags: dict[str, Tag],
+    *,
+    include_hidden: bool = False,
+    console: Console | None = None,
+) -> None:
+    """Print a hierarchical tag tree."""
+    out = console or _DEFAULT_CONSOLE
+    data = build_tag_tree_data(tags, include_hidden=include_hidden)
+    root_tree = Tree("[bold]Tags[/bold]")
+
+    def add_tag_node(parent: Tree, node: dict[str, Any]) -> None:
+        tag = cast(dict[str, Any], node["tag"])
+        branch = parent.add(_tag_tree_label(tag))
+        for child in cast(list[dict[str, Any]], node["children"]):
+            add_tag_node(branch, child)
+
+    for node in cast(list[dict[str, Any]], data["tags"]):
+        add_tag_node(root_tree, node)
+
+    out.print(root_tree)
+
+
+def render_tags_json(
+    tags: dict[str, Tag],
+    *,
+    include_hidden: bool = False,
+    console: Console | None = None,
+) -> None:
+    """Print nested tag hierarchy as JSON."""
+    out = console or _DEFAULT_CONSOLE
+    out.print(
+        json.dumps(
+            build_tag_tree_data(tags, include_hidden=include_hidden),
+            default=_json_default,
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
 
@@ -361,6 +436,11 @@ def _project_to_dict(project: Project) -> dict[str, Any]:
 
 def _folder_to_dict(folder: Folder) -> dict[str, Any]:
     d = dataclasses.asdict(folder)
+    return d
+
+
+def _tag_to_dict(tag: Tag) -> dict[str, Any]:
+    d = dataclasses.asdict(tag)
     return d
 
 
@@ -415,4 +495,12 @@ def _project_tree_label(
         label += f" [dim]due {str(project['due'])[:10]}[/dim]"
     if show_missing_folder and project.get("folder_id"):
         label += f" [dim]-> {project['folder_id']}[/dim]"
+    return label
+
+
+def _tag_tree_label(tag: dict[str, Any]) -> str:
+    """Return the rich tree label used by the tag tree view."""
+    label = f"{tag['name']} [dim]({tag['id']})[/dim]"
+    if tag.get("hidden"):
+        label += " [dim]dropped[/dim]"
     return label

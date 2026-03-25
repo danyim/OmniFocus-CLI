@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
-from omnifocus.models import Folder, OFModel, Project, Task
+from omnifocus.models import Folder, OFModel, Project, Tag, Task
 from omnifocus.store import OFocusStore, _default_cache_dir, _WriterState
 from omnifocus.sync.graph import (
     current_frontier_tail_ids,
@@ -1563,6 +1563,47 @@ class TestWritePath:
         xml = _read_contents_xml(uploaded)
         assert '<folder id="f1" op="delete">' in xml
         assert "<name>" not in xml
+
+    @pytest.mark.asyncio
+    async def test_add_tag_uploads_tag_transaction(self, tmp_path: Path) -> None:
+        store, client = _make_store(tmp_path)
+        result = await store.add_tag(name="@home", parent_tag_id="parent1", note="Desk")
+        assert result == {"status": "created", "tag_id": result["tag_id"], "name": "@home"}
+        uploaded = client.put_file.await_args_list[0].args[1]
+        xml = _read_contents_xml(uploaded)
+        assert "<name>@home</name>" in xml
+        assert '<context idref="parent1"/>' in xml
+        assert "<note>Desk</note>" in xml
+
+    @pytest.mark.asyncio
+    async def test_update_tag_uploads_tag_transaction(self, tmp_path: Path) -> None:
+        store, client = _make_store(tmp_path)
+        tag = Tag(
+            id="tag1",
+            name="@home",
+            parent_tag_id="parent1",
+            rank=100,
+            added=NOW,
+            modified=NOW,
+            note="Desk",
+        )
+        result = await store.update_tag(tag)
+        assert result == {"status": "updated", "tag_id": "tag1", "name": "@home"}
+        uploaded = client.put_file.await_args_list[0].args[1]
+        xml = _read_contents_xml(uploaded)
+        assert "<name>@home</name>" in xml
+        assert '<context idref="parent1"/>' in xml
+        assert "<note>Desk</note>" in xml
+
+    @pytest.mark.asyncio
+    async def test_drop_tag_marks_tag_hidden(self, tmp_path: Path) -> None:
+        store, client = _make_store(tmp_path)
+        tag = Tag(id="tag1", name="@home", parent_tag_id=None, rank=100, added=NOW, modified=NOW)
+        result = await store.drop_tag(tag)
+        assert result == {"status": "dropped", "tag_id": "tag1", "name": "@home"}
+        uploaded = client.put_file.await_args_list[0].args[1]
+        xml = _read_contents_xml(uploaded)
+        assert "<hidden>" in xml
 
     @pytest.mark.asyncio
     async def test_upload_transaction_rejects_missing_writable_key_slot(

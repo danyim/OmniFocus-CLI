@@ -161,6 +161,8 @@ class TestBuildModel:
         assert "tag2" in sample_model.tags
         assert sample_model.tags["tag1"].name == "@home"
         assert sample_model.tags["tag2"].parent_tag_id == "tag1"
+        assert sample_model.tags["tag1"].added is not None
+        assert sample_model.tags["tag1"].modified is not None
 
     def test_projects_loaded(self, sample_model: OFModel) -> None:
         assert "proj1" in sample_model.projects

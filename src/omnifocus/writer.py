@@ -22,7 +22,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from omnifocus.models import Folder, Project, Task
+from omnifocus.models import Folder, Project, Tag, Task
 
 _NS = "http://www.omnigroup.com/namespace/OmniFocus/v2"
 _APP_ID = "com.omnigroup.OmniFocus4"
@@ -107,6 +107,20 @@ class AddFolderPlan(WritePlan):
             return iter((None, None, self.folder_id))
         first = self.deltas[0]
         return iter((first.filename, first.data, self.folder_id))
+
+
+@dataclass(frozen=True)
+class AddTagPlan(WritePlan):
+    """A multi-delta tag creation plan."""
+
+    tag_id: str
+
+    def __iter__(self) -> Iterator[object]:
+        """Iterate like the legacy ``(filename, data, tag_id)`` tuple API."""
+        if not self.deltas:
+            return iter((None, None, self.tag_id))
+        first = self.deltas[0]
+        return iter((first.filename, first.data, self.tag_id))
 
 
 def generate_id() -> str:
@@ -219,6 +233,38 @@ class TransactionBuilder:
             children.append(self._leaf("modified", _format_dt_utc(modified_dt)))
         op_attr = f' op="{op}"' if op else ""
         return f'<folder id="{folder_id}"{op_attr}>{"".join(children)}</folder>'
+
+    def _tag_element(
+        self,
+        *,
+        tag_id: str,
+        op: str | None,
+        name: str | None,
+        parent_tag_id: str | None,
+        rank: int | None,
+        added_dt: datetime | None,
+        modified_dt: datetime | None,
+        note: str | None,
+        hidden_dt: datetime | None,
+    ) -> str:
+        """Render a tag/context XML element."""
+        children: list[str] = []
+        if parent_tag_id is not None:
+            children.append(f'<context idref="{parent_tag_id}"/>')
+        if added_dt is not None:
+            children.append(self._leaf("added", _format_dt_utc(added_dt)))
+        if name is not None:
+            children.append(self._leaf("name", name))
+        if note is not None:
+            children.append(self._leaf("note", note))
+        if rank is not None:
+            children.append(self._leaf("rank", str(rank)))
+        if hidden_dt is not None:
+            children.append(self._leaf("hidden", _format_dt_utc(hidden_dt)))
+        if modified_dt is not None:
+            children.append(self._leaf("modified", _format_dt_utc(modified_dt)))
+        op_attr = f' op="{op}"' if op else ""
+        return f'<context id="{tag_id}"{op_attr}>{"".join(children)}</context>'
 
     def _task_element(
         self,
@@ -649,6 +695,33 @@ class TransactionBuilder:
             )
         )
 
+    def add_tag(
+        self,
+        *,
+        tag_id: str,
+        name: str,
+        parent_tag_id: str | None,
+        rank: int,
+        added_dt: datetime,
+        modified_dt: datetime,
+        note: str = "",
+        hidden_dt: datetime | None = None,
+    ) -> None:
+        """Add a tag payload to the transaction."""
+        self._elements.append(
+            self._tag_element(
+                tag_id=tag_id,
+                op=None,
+                name=name,
+                parent_tag_id=parent_tag_id,
+                rank=rank,
+                added_dt=added_dt,
+                modified_dt=modified_dt,
+                note=note,
+                hidden_dt=hidden_dt,
+            )
+        )
+
     def update_folder(
         self,
         *,
@@ -669,6 +742,33 @@ class TransactionBuilder:
                 rank=rank,
                 added_dt=added_dt,
                 modified_dt=modified_dt,
+            )
+        )
+
+    def update_tag(
+        self,
+        *,
+        tag_id: str,
+        name: str,
+        parent_tag_id: str | None,
+        rank: int,
+        added_dt: datetime | None,
+        modified_dt: datetime | None,
+        note: str,
+        hidden_dt: datetime | None,
+    ) -> None:
+        """Add a tag update payload to the transaction."""
+        self._elements.append(
+            self._tag_element(
+                tag_id=tag_id,
+                op=None,
+                name=name,
+                parent_tag_id=parent_tag_id,
+                rank=rank,
+                added_dt=added_dt,
+                modified_dt=modified_dt,
+                note=note,
+                hidden_dt=hidden_dt,
             )
         )
 
@@ -1117,6 +1217,38 @@ class TaskWriter:
         )
         return AddFolderPlan(folder_id=new_id, deltas=plan.deltas)
 
+    def add_tag(
+        self,
+        name: str,
+        *,
+        parent_tag_id: str | None = None,
+        tag_id: str | None = None,
+        note: str = "",
+        rank: int | None = None,
+        write_strategy: WriteStrategy = "client_after_each_delta",
+        chain_shape: ChainShape = "app_rebase",
+    ) -> AddTagPlan:
+        """Create a write plan that adds a new tag."""
+        now = _now_utc()
+        new_id = tag_id or generate_id()
+        tag_rank = rank if rank is not None else int(now.timestamp() * 1000) & 0x7FFFFFFF
+        builder = TransactionBuilder(context=self._context)
+        builder.add_tag(
+            tag_id=new_id,
+            name=name,
+            parent_tag_id=parent_tag_id,
+            rank=tag_rank,
+            added_dt=now,
+            modified_dt=now,
+            note=note,
+        )
+        plan = self._build_write_plan(
+            builders=((builder, now),),
+            write_strategy=write_strategy,
+            chain_shape=chain_shape,
+        )
+        return AddTagPlan(tag_id=new_id, deltas=plan.deltas)
+
     def update_folder(
         self,
         folder: Folder,
@@ -1155,6 +1287,59 @@ class TaskWriter:
         builder.add_folder_deletion(folder.id, now)
         return self._build_write_plan(
             builders=((builder, now),),
+            write_strategy=write_strategy,
+            chain_shape=chain_shape,
+        )
+
+    def update_tag(
+        self,
+        tag: Tag,
+        *,
+        when: datetime | None = None,
+        write_strategy: WriteStrategy = "client_after_each_delta",
+        chain_shape: ChainShape = "app_rebase",
+    ) -> WritePlan:
+        """Create a write plan that upserts an existing tag."""
+        now = when or _now_utc()
+        builder = TransactionBuilder(context=self._context)
+        builder.update_tag(
+            tag_id=tag.id,
+            name=tag.name,
+            parent_tag_id=tag.parent_tag_id,
+            rank=tag.rank,
+            added_dt=tag.added,
+            modified_dt=tag.modified or now,
+            note=tag.note,
+            hidden_dt=tag.hidden,
+        )
+        return self._build_write_plan(
+            builders=((builder, now),),
+            write_strategy=write_strategy,
+            chain_shape=chain_shape,
+        )
+
+    def drop_tag(
+        self,
+        tag: Tag,
+        *,
+        write_strategy: WriteStrategy = "client_after_each_delta",
+        chain_shape: ChainShape = "app_rebase",
+    ) -> WritePlan:
+        """Create a write plan that marks a tag as dropped."""
+        now = _now_utc()
+        dropped = Tag(
+            id=tag.id,
+            name=tag.name,
+            parent_tag_id=tag.parent_tag_id,
+            rank=tag.rank,
+            added=tag.added,
+            modified=now,
+            note=tag.note,
+            hidden=now,
+        )
+        return self.update_tag(
+            dropped,
+            when=now,
             write_strategy=write_strategy,
             chain_shape=chain_shape,
         )

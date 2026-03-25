@@ -319,6 +319,10 @@ def _build_tag(el: ET.Element) -> Tag | None:
         name=name,
         parent_tag_id=_idref(el, "context"),
         rank=_int(el, "rank", 0) or 0,
+        added=_parse_dt_utc(_text(el, "added")),
+        modified=_parse_dt_utc(_text(el, "modified")),
+        note=_text(el, "note") or "",
+        hidden=_parse_dt_utc(_text(el, "hidden")),
     )
 
 
