@@ -211,6 +211,7 @@ jobs:
             --name omnifocus-http-smoke \
             -p 127.0.0.1:8443:8443 \
             -v "$PWD/test-certs":/tls:ro \
+            -e OF_HTTP_HOST=0.0.0.0 \
             -e OF_HTTP_API_KEY=test-token \
             -e OF_HTTP_TLS_CERT_FILE=/tls/cert.pem \
             -e OF_HTTP_TLS_KEY_FILE=/tls/key.pem \
