@@ -7,6 +7,24 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-04-07
+
+### Added
+
+- Add a hardened HTTPS API with FastAPI, authenticated OpenAPI, and mandatory
+  TLS 1.3 for network automation clients such as n8n
+
+### Changed
+
+- Harden the HTTP transport with trusted host validation, security headers,
+  auth failure throttling, request timeouts, and structured OTel-style logs
+- Promote OpenAPI to the canonical machine-readable HTTP contract and tighten
+  the public CLI, MCP, and HTTP documentation around shipped behavior
+- Expand public transport-facing docstrings so runtime entrypoints and API
+  schemas are clearer to operators and integrators
+- Update the FastAPI and Starlette dependency ranges to pull in the fixed
+  Starlette release for `CVE-2025-62727`
+
 ## [1.0.12] - 2026-03-25
 
 ### Added
