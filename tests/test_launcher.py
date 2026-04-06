@@ -23,6 +23,16 @@ class TestLauncher:
             main(["mcp"])
         mock_mcp.assert_called_once_with()
 
+    def test_http_dispatches_to_http_entrypoint(self) -> None:
+        with patch("omnifocus.launcher.http_main") as mock_http:
+            main(["http"])
+        mock_http.assert_called_once_with([])
+
+    def test_http_forwards_additional_args(self) -> None:
+        with patch("omnifocus.launcher.http_main") as mock_http:
+            main(["http", "--help"])
+        mock_http.assert_called_once_with(["--help"])
+
     def test_sync_dispatches_to_cli(self) -> None:
         with patch("omnifocus.launcher.cli.main") as mock_cli:
             main(["sync"])

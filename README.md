@@ -7,9 +7,13 @@
 [![Container](https://img.shields.io/github/v/release/szymczag/OmniFocus-CLI?label=container&logo=github)](https://github.com/szymczag/OmniFocus-CLI/pkgs/container/omnifocus-cli)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Independent OmniFocus 4 automation with a production CLI and a container-first MCP server.
+Independent OmniFocus 4 automation with a production CLI, a secure HTTPS API, and a
+container-first MCP server.
 
-`omnifocus-cli` syncs directly with an OmniFocus WebDAV endpoint, reads encrypted `.ofocus` bundles, exposes a clean `of` command-line interface, and runs as an MCP server for Claude-compatible hosts.
+`omnifocus-cli` syncs directly with an OmniFocus WebDAV endpoint, reads encrypted `.ofocus`
+bundles, exposes a clean `of` command-line interface, runs as an MCP server for
+Claude-compatible hosts, and can serve a private HTTPS JSON API for n8n and other automation
+clients.
 
 It does **not** require OmniFocus.app, macOS, AppleScript, or Omni Automation. If a host can
 reach your OmniFocus WebDAV bundle and provide the right credentials, `omnifocus-cli` can run
@@ -19,6 +23,7 @@ there headlessly.
 
 - Native-feeling CLI for day-to-day task management
 - MCP server over stdio for LLM tooling and local assistants
+- HTTPS JSON API for n8n-style automations, protected by mandatory TLS 1.3+ and Bearer auth
 - Direct WebDAV sync without AppleScript or Omni Automation glue
 - No dependency on OmniFocus.app or macOS at runtime
 - Headless/container-friendly operation on servers, CI runners, and agent boxes
@@ -76,6 +81,18 @@ podman run --rm -i \
   of
 ```
 
+### Run as a private HTTPS API
+
+```bash
+podman run --rm \
+  -p 127.0.0.1:8443:8443 \
+  -v "$PWD/certs":/tls:ro \
+  -e OF_HTTP_API_KEY=replace-me \
+  -e OF_HTTP_TLS_CERT_FILE=/tls/cert.pem \
+  -e OF_HTTP_TLS_KEY_FILE=/tls/key.pem \
+  of http
+```
+
 ### Inspect the CLI surface
 
 ```bash
@@ -86,6 +103,8 @@ podman run --rm --pull=always of --version
 ## Documentation
 
 - [CLI reference](docs/cli.md)
+- [HTTPS API reference](docs/http.md)
+- [ASVS 5.0 security mapping](docs/security/asvs-5.0.md)
 - [MCP reference](docs/mcp.md)
 - [Container and runtime notes](docs/container.md)
 
@@ -95,6 +114,7 @@ The project exposes two native Python entrypoints:
 
 - `of` for CLI usage
 - `of-mcp` for direct MCP usage
+- `of-http` for direct HTTPS API usage
 
 The container image ships with a launcher:
 
@@ -106,6 +126,8 @@ The container image ships with a launcher:
   Starts the MCP server over stdio
 - `podman run --rm -i of mcp`
   Starts the MCP server explicitly
+- `podman run --rm of http`
+  Starts the HTTPS API with mandatory TLS and Bearer auth
 
 ## CLI Usage
 
@@ -126,6 +148,7 @@ Today the project supports:
 - direct WebDAV sync of OmniFocus bundles
 - tasks, projects, folders, and tags
 - project review workflow over MCP
+- HTTPS JSON API for tasks, projects, folders, tags, review, and sync
 - MCP over stdio
 - headless/container-first deployment
 

@@ -29,6 +29,10 @@ dependencies = [
     "httpx>=0.28.1,<0.29",
     "cryptography>=46.0.5,<47.0",
     "mcp>=1.26.0,<2.0",
+    "fastapi>=0.118.0,<0.119",
+    "pydantic>=2.12.0,<3.0",
+    "starlette>=0.48.0,<0.49",
+    "uvicorn>=0.37.0,<0.38",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +50,7 @@ dev = [
 [project.scripts]
 of = "omnifocus.cli:cli"
 of-mcp = "omnifocus.mcp_server:main"
+of-http = "omnifocus.http_api:main"
 
 [project.urls]
 Homepage = "https://github.com/szymczag/OmniFocus-CLI"

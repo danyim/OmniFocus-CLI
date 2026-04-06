@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
+import asyncio
 import dataclasses
 import json
 from datetime import UTC, datetime
@@ -12,7 +13,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from omnifocus.errors import OFError
 from omnifocus.mcp_server import (
+    _folder_summary,
     _handle_add_folder,
     _handle_add_project,
     _handle_add_tag,
@@ -38,13 +41,19 @@ from omnifocus.mcp_server import (
     _handle_update_project,
     _handle_update_tag,
     _handle_update_task,
+    _parse_optional_date,
+    _parse_optional_utc_datetime,
+    _project_review_sort_key,
+    _project_summary,
     _serialise,
+    _tag_summary,
     _task_summary,
     _text,
     _validate_folder_parent_change,
     _validate_tag_parent_change,
     call_tool,
     list_tools,
+    main,
 )
 from omnifocus.models import Folder, OFModel, Project, Tag, Task
 
@@ -337,9 +346,8 @@ class TestHandleListTasks:
         with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
             result = await _handle_list_tasks({"today": True})
         data = _parse_response(result)
-        # t2 has due=today, t1 has due=future
-        assert len(data) == 1
-        assert data[0]["id"] == "t2"
+        # "today" includes tasks due today and overdue tasks.
+        assert {task["id"] for task in data} == {"t1", "t2"}
 
     @pytest.mark.asyncio
     async def test_due_filter(self) -> None:
@@ -1428,6 +1436,57 @@ class TestHandleTagTools:
         assert data["error"] == "Tag not found: missing"
 
 
+class TestCompatibilityWrappers:
+    def test_project_summary_wrapper(self) -> None:
+        model = _make_model()
+        summary = _project_summary(model.projects["p1"], model, now=NOW)
+        assert summary["id"] == "p1"
+        assert summary["review_due"] is True
+
+    def test_project_review_sort_key_wrapper(self) -> None:
+        model = _make_model()
+        summary = _project_summary(model.projects["p1"], model, now=NOW)
+        from omnifocus.review import compute_project_review_state
+
+        state = compute_project_review_state(model.projects["p1"], now=NOW)
+        key = _project_review_sort_key(summary, state)
+        assert isinstance(key, tuple)
+
+    def test_folder_summary_wrapper(self) -> None:
+        model = _make_model()
+        summary = _folder_summary(model.folders["f1"], model)
+        assert summary["id"] == "f1"
+        assert summary["project_ids"] == ["p1", "p2", "p3"]
+
+    def test_tag_summary_wrapper(self) -> None:
+        model = _make_model()
+        summary = _tag_summary(model.tags["tag1"], model)
+        assert summary["id"] == "tag1"
+        assert summary["parent_name"] is None
+
+    def test_parse_optional_date_wrapper(self) -> None:
+        assert _parse_optional_date("2026-04-06T12:00:00+00:00") == datetime(
+            2026,
+            4,
+            6,
+            12,
+            0,
+            0,
+            tzinfo=UTC,
+        )
+
+    def test_parse_optional_utc_datetime_wrapper(self) -> None:
+        assert _parse_optional_utc_datetime("2026-04-06T12:00:00+00:00") == datetime(
+            2026,
+            4,
+            6,
+            12,
+            0,
+            0,
+            tzinfo=UTC,
+        )
+
+
 class TestValidateFolderParentChange:
     def test_conflicting_inputs(self) -> None:
         result = _validate_folder_parent_change(
@@ -1530,6 +1589,42 @@ class TestHandleSyncNow:
         data = _parse_response(result)
         assert data["status"] == "synced"
         assert "tasks" in data
+
+
+class TestCallToolErrors:
+    @pytest.mark.asyncio
+    async def test_call_tool_catches_of_error_from_handler(self) -> None:
+        async def _boom(_args: dict[str, Any]) -> list[Any]:
+            raise OFError("boom")
+
+        with patch("omnifocus.mcp_server._handle_list_tasks", _boom):
+            result = await call_tool("list_tasks", {})
+
+        assert _parse_response(result)["error"] == "boom"
+
+
+class TestMain:
+    def test_main_runs_stdio_server(self) -> None:
+        real_asyncio_run = asyncio.run
+        run_mock = AsyncMock(return_value=None)
+
+        class _FakeContext:
+            async def __aenter__(self) -> tuple[str, str]:
+                return ("reader", "writer")
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+                return False
+
+        with patch("omnifocus.mcp_server.stdio_server", return_value=_FakeContext()):
+            with patch("omnifocus.mcp_server.server.run", run_mock):
+                with patch(
+                    "omnifocus.mcp_server.asyncio.run",
+                    side_effect=real_asyncio_run,
+                ) as run_async:
+                    main()
+
+        run_async.assert_called_once()
+        run_mock.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
