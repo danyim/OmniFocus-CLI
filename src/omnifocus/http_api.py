@@ -204,34 +204,38 @@ class _AuthFailureLimiter:
 
 
 class EnvelopeModel(BaseModel):
-    """Base model configuration for HTTP API schemas."""
+    """Base class for public HTTP API schemas.
+
+    All request and response models inherit the same strict `extra="forbid"` policy so the
+    OpenAPI contract, runtime validation, and tests agree on accepted fields.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
 
 class ErrorDetail(EnvelopeModel):
-    """Standard error detail payload."""
+    """Machine-readable error detail payload returned inside error envelopes."""
 
     code: str
     message: str
 
 
 class ErrorEnvelope(EnvelopeModel):
-    """Standard error response envelope."""
+    """Standard top-level error envelope for all HTTP failures."""
 
     ok: Literal[False]
     error: ErrorDetail
 
 
 class SuccessEnvelope[T](EnvelopeModel):
-    """Standard success response envelope."""
+    """Standard top-level success envelope wrapping typed response data."""
 
     ok: Literal[True]
     data: T
 
 
 class HealthData(EnvelopeModel):
-    """Health-check payload."""
+    """Minimal authenticated liveness payload for the HTTPS transport."""
 
     status: Literal["ok"]
     transport: Literal["https"]
@@ -239,7 +243,7 @@ class HealthData(EnvelopeModel):
 
 
 class SyncResultModel(EnvelopeModel):
-    """Sync summary payload."""
+    """Forced-sync summary containing top-level object counts."""
 
     status: str
     tasks: int
@@ -249,7 +253,11 @@ class SyncResultModel(EnvelopeModel):
 
 
 class TaskSummaryModel(EnvelopeModel):
-    """HTTP task summary schema."""
+    """Canonical HTTP task summary returned by list and get endpoints.
+
+    This model mirrors the transport-facing task projection: stable IDs, task state, dates,
+    notes, and both raw `tag_ids` plus resolved `tag_names`.
+    """
 
     id: str
     name: str
@@ -266,13 +274,13 @@ class TaskSummaryModel(EnvelopeModel):
 
 
 class TaskSearchResultModel(TaskSummaryModel):
-    """Task search result with score."""
+    """Task summary extended with a fuzzy-match score."""
 
     score: float
 
 
 class TaskMutationResult(EnvelopeModel):
-    """Task mutation result payload."""
+    """Minimal mutation result returned by task write endpoints."""
 
     status: str
     task_id: str
@@ -280,7 +288,11 @@ class TaskMutationResult(EnvelopeModel):
 
 
 class ProjectSummaryModel(EnvelopeModel):
-    """HTTP project summary schema."""
+    """Canonical HTTP project summary returned by list, get, and review endpoints.
+
+    The schema intentionally includes both core OmniFocus fields and transport-added convenience
+    fields such as `folder_name`, `tag_names`, `review_due`, and `review_basis`.
+    """
 
     id: str
     name: str
@@ -316,7 +328,7 @@ class ProjectSummaryModel(EnvelopeModel):
 
 
 class ProjectMutationResult(EnvelopeModel):
-    """Project mutation result payload."""
+    """Minimal mutation result returned by project write endpoints."""
 
     status: str
     project_id: str
@@ -324,13 +336,17 @@ class ProjectMutationResult(EnvelopeModel):
 
 
 class ProjectReviewMutationResult(ProjectSummaryModel):
-    """Project review update payload."""
+    """Project summary returned after a review stamp operation."""
 
     next_review_recalculated: bool
 
 
 class FolderSummaryModel(EnvelopeModel):
-    """HTTP folder summary schema."""
+    """Folder summary returned by flat folder endpoints.
+
+    Besides the folder's own fields, the payload includes direct child folder IDs and direct child
+    project IDs so non-tree clients can navigate relationships cheaply.
+    """
 
     id: str
     name: str
@@ -343,7 +359,7 @@ class FolderSummaryModel(EnvelopeModel):
 
 
 class FolderTreeFolderModel(EnvelopeModel):
-    """Folder payload embedded in tree responses."""
+    """Folder projection embedded inside recursive tree responses."""
 
     id: str
     name: str
@@ -354,7 +370,7 @@ class FolderTreeFolderModel(EnvelopeModel):
 
 
 class FolderTreeProjectModel(EnvelopeModel):
-    """Project payload embedded in folder-tree responses."""
+    """Project projection embedded inside folder-tree responses."""
 
     id: str
     name: str
@@ -386,7 +402,7 @@ class FolderTreeProjectModel(EnvelopeModel):
 
 
 class FolderTreeNodeModel(EnvelopeModel):
-    """Recursive folder tree node."""
+    """Recursive folder tree node with nested folders and direct child projects."""
 
     folder: FolderTreeFolderModel
     children: list[FolderTreeNodeModel] = Field(default_factory=list)
@@ -394,7 +410,7 @@ class FolderTreeNodeModel(EnvelopeModel):
 
 
 class FolderTreeDataModel(EnvelopeModel):
-    """Top-level folder tree response payload."""
+    """Top-level folder tree response, including dangling and no-folder projects."""
 
     folders: list[FolderTreeNodeModel] = Field(default_factory=list)
     no_folder_projects: list[FolderTreeProjectModel] = Field(default_factory=list)
@@ -402,7 +418,7 @@ class FolderTreeDataModel(EnvelopeModel):
 
 
 class FolderMutationResult(EnvelopeModel):
-    """Folder mutation result payload."""
+    """Minimal mutation result returned by folder write endpoints."""
 
     status: str
     folder_id: str
@@ -410,7 +426,7 @@ class FolderMutationResult(EnvelopeModel):
 
 
 class TagSummaryModel(EnvelopeModel):
-    """HTTP tag summary schema."""
+    """Canonical HTTP tag summary, including parent and child references."""
 
     id: str
     name: str
@@ -425,7 +441,7 @@ class TagSummaryModel(EnvelopeModel):
 
 
 class TagMutationResult(EnvelopeModel):
-    """Tag mutation result payload."""
+    """Minimal mutation result returned by tag write endpoints."""
 
     status: str
     tag_id: str
@@ -433,7 +449,11 @@ class TagMutationResult(EnvelopeModel):
 
 
 class AddTaskRequest(EnvelopeModel):
-    """Request body for creating tasks."""
+    """Request body for creating tasks.
+
+    The transport accepts human-friendly due strings here because creation still allows the
+    higher-level CLI/MCP date vocabulary at the HTTP edge.
+    """
 
     name: str
     project_id: str | None = None
@@ -443,7 +463,11 @@ class AddTaskRequest(EnvelopeModel):
 
 
 class UpdateTaskRequest(EnvelopeModel):
-    """Request body for updating tasks."""
+    """Request body for updating tasks by stable ID.
+
+    This schema models conflicting move and tag operations explicitly so FastAPI can reject
+    malformed shapes before they reach the service layer.
+    """
 
     name: str | None = None
     project_id: str | None = None
@@ -460,7 +484,7 @@ class UpdateTaskRequest(EnvelopeModel):
 
 
 class AddProjectRequest(EnvelopeModel):
-    """Request body for creating projects."""
+    """Request body for creating projects assigned to a folder by stable ID."""
 
     name: str
     folder_id: str | None = None
@@ -472,7 +496,7 @@ class AddProjectRequest(EnvelopeModel):
 
 
 class UpdateProjectRequest(EnvelopeModel):
-    """Request body for updating projects."""
+    """Request body for updating projects by stable ID."""
 
     name: str | None = None
     folder_id: str | None = None
@@ -487,20 +511,20 @@ class UpdateProjectRequest(EnvelopeModel):
 
 
 class ReviewProjectRequest(EnvelopeModel):
-    """Optional review-marking request body."""
+    """Optional review-marking request body with an explicit UTC timestamp override."""
 
     reviewed_at: datetime | None = None
 
 
 class AddFolderRequest(EnvelopeModel):
-    """Request body for creating folders."""
+    """Request body for creating folders, optionally under a parent folder ID."""
 
     name: str
     parent_folder_id: str | None = None
 
 
 class UpdateFolderRequest(EnvelopeModel):
-    """Request body for updating folders."""
+    """Request body for renaming or reparenting folders."""
 
     name: str | None = None
     parent_folder_id: str | None = None
@@ -508,7 +532,7 @@ class UpdateFolderRequest(EnvelopeModel):
 
 
 class AddTagRequest(EnvelopeModel):
-    """Request body for creating tags."""
+    """Request body for creating tags, optionally under a parent tag ID."""
 
     name: str
     parent_tag_id: str | None = None
@@ -516,7 +540,7 @@ class AddTagRequest(EnvelopeModel):
 
 
 class UpdateTagRequest(EnvelopeModel):
-    """Request body for updating tags."""
+    """Request body for renaming or reparenting tags."""
 
     name: str | None = None
     parent_tag_id: str | None = None

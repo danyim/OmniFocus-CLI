@@ -69,6 +69,8 @@ The canonical machine-readable schema lives at:
 - `GET /v1/openapi.json`
 
 It is protected by the same Bearer auth path as the rest of the API.
+That OpenAPI document is the normative HTTP contract; this Markdown page is an operator guide
+and implementation summary.
 
 Example:
 
@@ -140,6 +142,20 @@ All success and error responses carry the same security baseline:
 - `X-Content-Type-Options: nosniff`
 - `Cache-Control: no-store`
 - `Pragma: no-cache`
+
+## ASVS Coverage Notes
+
+The companion mapping in `docs/security/asvs-5.0.md` is a traceability matrix, not a
+certification statement.
+
+It is intended to show:
+
+- which ASVS 5.0 controls are implemented directly in the HTTPS API
+- which controls are only partially implemented
+- which controls remain open or intentionally out of scope for this transport
+
+It is not intended to guarantee full ASVS conformance for the repository or the deployment
+environment around it.
 
 ## Request Logging
 

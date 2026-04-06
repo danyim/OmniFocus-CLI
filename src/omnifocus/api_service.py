@@ -41,7 +41,12 @@ class StoreContextFactory(Protocol):
 
 
 class StoreBackedApiService:
-    """Transport-neutral service layer backed by ``OFocusStore``."""
+    """Transport-neutral service layer backed by ``OFocusStore``.
+
+    This class is the shared public contract boundary for both MCP and HTTPS transports.
+    It owns request-level validation, stable-ID lookup rules, and summary serialization,
+    while delegating persistence and sync mechanics to :class:`OFocusStore`.
+    """
 
     def __init__(
         self,
@@ -65,7 +70,12 @@ class StoreBackedApiService:
         tag_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """List tasks using the current filter model."""
+        """List tasks using the shared filter model for MCP and HTTP.
+
+        Filtering semantics intentionally match the user-facing surfaces: all supplied filters are
+        applied with AND logic, `project` and `tag` use substring matching, and `tag_id` uses an
+        exact stable identifier.
+        """
         model = await self._load_model(False)
         tasks = model.active_tasks
         if inbox:
@@ -90,7 +100,7 @@ class StoreBackedApiService:
         return [task_summary(task, model) for task in tasks[:limit]]
 
     async def search_tasks(self, *, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        """Search tasks by fuzzy name or id."""
+        """Search tasks by fuzzy name or stable ID and return scored summaries."""
         model = await self._load_model(False)
         results = find_tasks(query, model.active_tasks, limit=limit)
         return [
@@ -99,7 +109,7 @@ class StoreBackedApiService:
         ]
 
     async def get_task(self, *, task_id: str) -> dict[str, Any]:
-        """Return a single task summary by id."""
+        """Return a single task summary by stable OmniFocus task ID."""
         model = await self._load_model(False)
         task = self._require_task(model, task_id)
         return task_summary(task, model)
@@ -113,7 +123,7 @@ class StoreBackedApiService:
         flagged: bool = False,
         note: str = "",
     ) -> dict[str, str]:
-        """Create a task, optionally inside an active project."""
+        """Create a task, optionally resolving it into an active project container."""
         if not name:
             raise OFHTTPError("name is required", status_code=422, code="validation_error")
         due_dt = self._parse_due_like(due, field="due")
@@ -157,7 +167,11 @@ class StoreBackedApiService:
         clear_tags: bool = False,
         dropped: bool | None = None,
     ) -> dict[str, str]:
-        """Update a task by stable ID."""
+        """Update a task by stable ID using the shared mutation semantics.
+
+        The method validates conflicting move operations, tag replacement versus clearing,
+        due/defer parsing, estimate coercion, and dropped/hidden transitions before persistence.
+        """
         model = await self._load_model(False)
         task = self._require_task(model, task_id)
         updated = self._build_updated_task(
@@ -189,7 +203,7 @@ class StoreBackedApiService:
             return await store.complete_task(task)
 
     async def drop_task(self, *, task_id: str) -> dict[str, str]:
-        """Drop a task by stable ID."""
+        """Drop a task by stable ID via the same update path used by other transports."""
         return await self.update_task(task_id=task_id, dropped=True)
 
     async def list_projects(
@@ -200,7 +214,11 @@ class StoreBackedApiService:
         tag_id: str | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """List projects with current filter semantics."""
+        """List projects with the current transport-shared filter semantics.
+
+        Status filtering is exact, while `tag` uses substring matching and `tag_id` uses an exact
+        stable identifier.
+        """
         if status not in {"active", "all", "inactive", "done", "dropped"}:
             raise OFHTTPError("Invalid status filter", status_code=422, code="validation_error")
         model = await self._load_model(False)
@@ -219,7 +237,7 @@ class StoreBackedApiService:
         return summaries if limit is None else summaries[:limit]
 
     async def get_project(self, *, project_id: str) -> dict[str, Any]:
-        """Return a single project summary by id."""
+        """Return a single project summary by stable OmniFocus project ID."""
         model = await self._load_model(False)
         project = self._require_project(model, project_id)
         return project_summary(project, model)
@@ -235,7 +253,7 @@ class StoreBackedApiService:
         note: str = "",
         status: str = "active",
     ) -> dict[str, str]:
-        """Create a project by folder ID."""
+        """Create a project, optionally assigning it to a folder by stable ID."""
         if not name:
             raise OFHTTPError("name is required", status_code=422, code="validation_error")
         if status not in {"active", "inactive"}:
@@ -273,7 +291,11 @@ class StoreBackedApiService:
         tag_ids: tuple[str, ...] | None = None,
         clear_tags: bool = False,
     ) -> dict[str, str]:
-        """Update a project by stable ID."""
+        """Update a project by stable ID using shared validation and status semantics.
+
+        The method validates folder moves, tag replacement versus clearing, due/defer parsing, and
+        status transitions including `done` and `dropped`.
+        """
         model = await self._load_model(False)
         project = self._require_project(model, project_id)
         updated = self._build_updated_project(
@@ -310,7 +332,11 @@ class StoreBackedApiService:
         due_only: bool = True,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """List projects for review, sorted by urgency."""
+        """List projects for review, sorted by urgency and review metadata.
+
+        By default only active and inactive projects that are currently due for review are
+        returned; callers can opt into a wider review queue via `due_only=False`.
+        """
         model = await self._load_model(False)
         now = datetime.now(UTC)
         candidates = [
@@ -336,7 +362,7 @@ class StoreBackedApiService:
         project_id: str,
         reviewed_at: str | None = None,
     ) -> dict[str, Any]:
-        """Stamp a project as reviewed and return its updated summary."""
+        """Stamp a project as reviewed and return its updated review-aware summary."""
         review_dt = parse_optional_utc_datetime(reviewed_at)
         if reviewed_at is not None and review_dt is None:
             raise OFHTTPError(
@@ -355,7 +381,7 @@ class StoreBackedApiService:
         return summary
 
     async def list_folders(self) -> list[dict[str, Any]]:
-        """List all folders with direct child references."""
+        """List all folders with direct child folder and project references."""
         model = await self._load_model(False)
         folders = sorted(
             model.folders.values(),
@@ -364,13 +390,13 @@ class StoreBackedApiService:
         return [folder_summary(folder, model) for folder in folders]
 
     async def get_folder(self, *, folder_id: str) -> dict[str, Any]:
-        """Return a single folder summary by id."""
+        """Return a single folder summary by stable OmniFocus folder ID."""
         model = await self._load_model(False)
         folder = self._require_folder(model, folder_id)
         return folder_summary(folder, model)
 
     async def get_folder_tree(self) -> dict[str, Any]:
-        """Return the nested folder tree."""
+        """Return the nested folder tree used by CLI and HTTP folder views."""
         model = await self._load_model(False)
         return build_folder_tree_data(model.folders, model.projects)
 
@@ -380,7 +406,7 @@ class StoreBackedApiService:
         name: str,
         parent_folder_id: str | None = None,
     ) -> dict[str, str]:
-        """Create a folder by parent folder ID."""
+        """Create a folder, optionally attaching it to a parent by stable ID."""
         if not name:
             raise OFHTTPError("name is required", status_code=422, code="validation_error")
         if parent_folder_id is not None:
@@ -397,7 +423,7 @@ class StoreBackedApiService:
         parent_folder_id: str | None = None,
         clear_parent: bool = False,
     ) -> dict[str, str]:
-        """Rename or move a folder."""
+        """Rename or move a folder after validating parent existence and cycles."""
         model = await self._load_model(False)
         folder = self._require_folder(model, folder_id)
         validation_error = validate_folder_parent_change(
@@ -423,21 +449,21 @@ class StoreBackedApiService:
             return await store.update_folder(updated)
 
     async def drop_folder(self, *, folder_id: str) -> dict[str, str]:
-        """Drop a folder by ID."""
+        """Drop a folder by stable ID."""
         model = await self._load_model(False)
         folder = self._require_folder(model, folder_id)
         async with self._store_factory() as store:
             return await store.drop_folder(folder)
 
     async def list_tags(self, *, include_hidden: bool = False) -> list[dict[str, Any]]:
-        """List tags, excluding hidden ones by default."""
+        """List tags, excluding hidden or dropped tags by default."""
         model = await self._load_model(False)
         tags = [tag for tag in model.tags.values() if include_hidden or tag.hidden is None]
         tags.sort(key=lambda item: (item.rank, item.name.lower(), item.id))
         return [tag_summary(tag, model) for tag in tags]
 
     async def get_tag(self, *, tag_id: str) -> dict[str, Any]:
-        """Return a single tag summary by id."""
+        """Return a single tag summary by stable OmniFocus tag ID."""
         model = await self._load_model(False)
         tag = self._require_tag(model, tag_id)
         return tag_summary(tag, model)
@@ -449,7 +475,7 @@ class StoreBackedApiService:
         parent_tag_id: str | None = None,
         note: str = "",
     ) -> dict[str, str]:
-        """Create a tag by parent tag ID."""
+        """Create a tag, optionally attaching it to a parent by stable ID."""
         if not name:
             raise OFHTTPError("name is required", status_code=422, code="validation_error")
         if parent_tag_id is not None:
@@ -467,7 +493,7 @@ class StoreBackedApiService:
         clear_parent: bool = False,
         note: str | None = None,
     ) -> dict[str, str]:
-        """Rename or move a tag."""
+        """Rename or move a tag after validating parent existence and cycles."""
         model = await self._load_model(False)
         tag = self._require_tag(model, tag_id)
         validation_error = validate_tag_parent_change(
@@ -494,14 +520,14 @@ class StoreBackedApiService:
             return await store.update_tag(updated)
 
     async def drop_tag(self, *, tag_id: str) -> dict[str, str]:
-        """Drop a tag by ID."""
+        """Drop a tag by stable ID."""
         model = await self._load_model(False)
         tag = self._require_tag(model, tag_id)
         async with self._store_factory() as store:
             return await store.drop_tag(tag)
 
     async def sync_now(self) -> dict[str, Any]:
-        """Force a sync and return basic object counts."""
+        """Force a fresh sync and return top-level object counts for operator surfaces."""
         model = await self._load_model(True)
         return {
             "status": "synced",
@@ -748,7 +774,11 @@ class StoreBackedApiService:
 
 
 def default_api_service() -> StoreBackedApiService:
-    """Return the default production API service instance."""
+    """Return the default production API service instance.
+
+    The returned service uses environment-derived store configuration and the normal model-loading
+    path used in production CLI, MCP, and HTTP deployments.
+    """
 
     async def _load(force_refresh: bool = False) -> OFModel:
         async with OFocusStore.from_env() as store:

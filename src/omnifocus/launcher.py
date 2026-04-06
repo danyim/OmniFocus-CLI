@@ -44,7 +44,7 @@ def _raise_usage_error(message: str) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Dispatch container arguments to the CLI or MCP server."""
+    """Dispatch container arguments to the CLI, MCP server, or HTTPS API entrypoint."""
     args = list(sys.argv[1:] if argv is None else argv)
 
     if not args:
@@ -74,7 +74,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 
 def console_main() -> None:
-    """Run the launcher with Click-style user-facing error handling."""
+    """Run the launcher with Click-style user-facing error handling and exit codes."""
     try:
         main()
     except click.ClickException as exc:

@@ -102,15 +102,15 @@ podman run --rm --pull=always of --version
 
 ## Documentation
 
-- [CLI reference](docs/cli.md)
-- [HTTPS API reference](docs/http.md)
-- [ASVS 5.0 security mapping](docs/security/asvs-5.0.md)
-- [MCP reference](docs/mcp.md)
-- [Container and runtime notes](docs/container.md)
+- [CLI reference](docs/cli.md) for the exact `of` command surface
+- [HTTPS API reference](docs/http.md) for operator guidance around the `/v1` API
+- [ASVS 5.0 security mapping](docs/security/asvs-5.0.md) for implemented controls and known gaps
+- [MCP reference](docs/mcp.md) for the stdio tool catalog and input contracts
+- [Container and runtime notes](docs/container.md) for image behavior and deployment patterns
 
 ## Command Model
 
-The project exposes two native Python entrypoints:
+The project exposes three native Python entrypoints:
 
 - `of` for CLI usage
 - `of-mcp` for direct MCP usage
