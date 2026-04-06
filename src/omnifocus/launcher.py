@@ -1,10 +1,11 @@
-"""Container launcher for OmniFocus CLI and MCP modes.
+"""Container launcher for OmniFocus CLI, MCP, and HTTPS API modes.
 
 This module keeps native Python console scripts unchanged while making the
 container UX simpler:
 
 - no args -> MCP server mode
 - ``mcp`` -> explicit MCP server mode
+- ``http`` -> explicit HTTPS API mode
 - CLI commands like ``sync`` or ``add`` -> Click CLI mode
 """
 
@@ -18,6 +19,7 @@ from collections.abc import Sequence
 import click
 
 from omnifocus.cli import cli
+from omnifocus.http_api import main as http_main
 from omnifocus.mcp_server import main as mcp_main
 
 _CLI_FLAGS = {"--help", "-h", "--version"}
@@ -27,6 +29,7 @@ _USAGE = """Usage:
   podman run --rm of add "Buy milk"
   podman run --rm -i of
   podman run --rm -i of mcp
+  podman run --rm of http
 """
 
 
@@ -41,7 +44,7 @@ def _raise_usage_error(message: str) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Dispatch container arguments to the CLI or MCP server."""
+    """Dispatch container arguments to the CLI, MCP server, or HTTPS API entrypoint."""
     args = list(sys.argv[1:] if argv is None else argv)
 
     if not args:
@@ -52,6 +55,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         if len(args) > 1:
             _raise_usage_error("The 'mcp' mode does not accept additional arguments.")
         mcp_main()
+        return
+
+    if args[0] == "http":
+        http_main(args[1:])
         return
 
     if args[0] == "of":
@@ -67,7 +74,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 
 def console_main() -> None:
-    """Run the launcher with Click-style user-facing error handling."""
+    """Run the launcher with Click-style user-facing error handling and exit codes."""
     try:
         main()
     except click.ClickException as exc:

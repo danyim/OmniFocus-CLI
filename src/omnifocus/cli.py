@@ -27,12 +27,12 @@ from __future__ import annotations
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
 import asyncio
-import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import click
 
 from omnifocus import __version__
+from omnifocus.dateparse import parse_due
 from omnifocus.errors import (
     OFBundleNotFound,
     OFEncryptionError,
@@ -93,60 +93,8 @@ def _run(coro: object) -> object:
 
 
 def _parse_due(value: str) -> datetime:
-    """Parse a human-friendly due-date string into a naive local datetime.
-
-    Accepts:
-        - ``today`` / ``tod``
-        - ``tomorrow`` / ``tom``
-        - ``mon`` / ``tue`` / ``wed`` / ``thu`` / ``fri`` / ``sat`` / ``sun``
-        - ``YYYY-MM-DD``
-        - ``MM-DD`` (current year assumed)
-
-    Args:
-        value: The raw string from the CLI option.
-
-    Returns:
-        A naive :class:`datetime` set to 19:00 on the target date.
-
-    Raises:
-        click.BadParameter: If the value cannot be parsed.
-    """
-    s = value.strip().lower()
-    today = datetime.today().replace(hour=19, minute=0, second=0, microsecond=0)
-
-    if s in ("today", "tod"):
-        return today
-
-    if s in ("tomorrow", "tom"):
-        return today + timedelta(days=1)
-
-    _DAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
-    if s[:3] in _DAYS:
-        target_wd = _DAYS[s[:3]]
-        days_ahead = (target_wd - today.weekday()) % 7
-        if days_ahead == 0:
-            days_ahead = 7
-        return today + timedelta(days=days_ahead)
-
-    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
-        try:
-            d = datetime.fromisoformat(s)
-            return d.replace(hour=19)
-        except ValueError:
-            pass
-
-    if re.match(r"^\d{2}-\d{2}$", s):
-        try:
-            d = datetime.fromisoformat(f"{today.year}-{s}")
-            return d.replace(hour=19)
-        except ValueError:
-            pass
-
-    raise click.BadParameter(
-        f"{value!r} is not a recognised date. "
-        "Use YYYY-MM-DD, MM-DD, today, tomorrow, or mon/tue/wed/thu/fri/sat/sun.",
-        param_hint="--due",
-    )
+    """Parse a due/defer token using the shared date parser."""
+    return parse_due(value)
 
 
 async def _get_model(force_refresh: bool = False) -> OFModel:

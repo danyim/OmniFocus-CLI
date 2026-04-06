@@ -63,26 +63,30 @@ from __future__ import annotations
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
 import asyncio
-import dataclasses
 import json
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
 from typing import Any, cast
 
-import click
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from omnifocus.errors import OFError
-from omnifocus.formatting import build_folder_tree_data
-from omnifocus.fuzzy import find_tasks
-from omnifocus.models import Folder, OFModel, Project, Tag, Task
-from omnifocus.review import (
-    ProjectReviewState,
-    compute_project_review_state,
-    mark_project_reviewed,
+from omnifocus.api_common import (
+    folder_summary,
+    parse_optional_date,
+    parse_optional_utc_datetime,
+    project_review_sort_key,
+    project_summary,
+    serialise_json,
+    tag_summary,
+    task_summary,
+    validate_folder_parent_change,
+    validate_tag_parent_change,
 )
+from omnifocus.api_service import StoreBackedApiService
+from omnifocus.errors import OFError
+from omnifocus.fuzzy import find_tasks
+from omnifocus.models import OFModel
 from omnifocus.store import OFocusStore
 
 # ---------------------------------------------------------------------------
@@ -99,15 +103,7 @@ server: Server = Server("omnifocus")
 
 def _serialise(obj: Any) -> Any:
     """Recursively serialise an object to a JSON-safe form."""
-    if isinstance(obj, datetime):
-        return obj.isoformat()
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return {k: _serialise(v) for k, v in dataclasses.asdict(obj).items()}
-    if isinstance(obj, dict):
-        return {k: _serialise(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_serialise(item) for item in obj]
-    return obj
+    return serialise_json(obj)
 
 
 def _text(data: Any) -> list[TextContent]:
@@ -120,30 +116,23 @@ def _text(data: Any) -> list[TextContent]:
     ]
 
 
+async def _service_text(coro: Awaitable[Any]) -> list[TextContent]:
+    """Convert service results and service-layer errors into MCP text payloads."""
+    try:
+        return _text(await coro)
+    except OFError as exc:
+        return _text({"error": str(exc)})
+
+
 async def _load_model(force: bool = False) -> OFModel:
     """Load the current OFModel via the store."""
     async with OFocusStore.from_env() as store:
         return await store.load(force_refresh=force)
 
 
-def _parse_optional_date(value: str | None) -> datetime | None:
-    """Parse an ISO 8601 date string or return None."""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return None
-
-
-def _parse_optional_utc_datetime(value: str | None) -> datetime | None:
-    """Parse an ISO 8601 timestamp and normalise naive values to UTC."""
-    parsed = _parse_optional_date(value)
-    if parsed is None:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+def _service() -> StoreBackedApiService:
+    """Return a store-backed service using MCP-local loader/store hooks."""
+    return StoreBackedApiService(load_model=_load_model, store_factory=OFocusStore.from_env)
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +305,12 @@ async def list_tools() -> list[Tool]:
                     "flagged": {"type": "boolean"},
                     "note": {"type": "string"},
                     "status": {"type": "string", "enum": ["active", "inactive", "done", "dropped"]},
+                    "tag_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Replace tag IDs on the project",
+                    },
+                    "clear_tags": {"type": "boolean"},
                 },
                 "required": ["project_id"],
             },
@@ -545,109 +540,56 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return _text({"error": str(exc)})
 
 
-def _matching_tag_ids(
-    model: OFModel,
-    query: str,
-    *,
-    include_hidden: bool = False,
-) -> set[str]:
-    """Return all matching tag ids for a substring query."""
-    return {
-        tag.id
-        for tag in model.tags.values()
-        if (include_hidden or tag.hidden is None) and query.lower() in tag.name.lower()
-    }
-
-
 async def _handle_list_tasks(args: dict[str, Any]) -> list[TextContent]:
-    model = await _load_model()
-    tasks = model.active_tasks
-    limit = int(args.get("limit", 50))
-
-    if args.get("inbox"):
-        tasks = [t for t in tasks if t.inbox]
-    if args.get("today"):
-        now_date = datetime.today().date()
-        tasks = [t for t in tasks if t.due is not None and t.due.date() <= now_date]
-    if args.get("flagged"):
-        tasks = [t for t in tasks if t.flagged]
-    if args.get("due"):
-        tasks = [t for t in tasks if t.due is not None]
-    if args.get("project"):
-        needle = args["project"].lower()
-        matching = {pid for pid, p in model.projects.items() if needle in p.name.lower()}
-        tasks = [t for t in tasks if t.project_id in matching]
-    if args.get("tag_id"):
-        tag_id = str(args["tag_id"])
-        if tag_id not in model.tags:
-            return _text({"error": f"Tag not found: {tag_id}"})
-        tasks = [task for task in tasks if tag_id in task.tag_ids]
-    if args.get("tag"):
-        matching_tag_ids = _matching_tag_ids(model, str(args["tag"]))
-        tasks = [task for task in tasks if matching_tag_ids.intersection(task.tag_ids)]
-
-    return _text([_task_summary(t, model) for t in tasks[:limit]])
+    return await _service_text(
+        _service().list_tasks(
+            inbox=bool(args.get("inbox")),
+            today=bool(args.get("today")),
+            flagged=bool(args.get("flagged")),
+            due=bool(args.get("due")),
+            project=str(args["project"]) if "project" in args else None,
+            tag=str(args["tag"]) if "tag" in args else None,
+            tag_id=str(args["tag_id"]) if "tag_id" in args else None,
+            limit=int(args.get("limit", 50)),
+        )
+    )
 
 
 async def _handle_search_tasks(args: dict[str, Any]) -> list[TextContent]:
-    query = str(args.get("query", ""))
-    limit = int(args.get("limit", 10))
-    model = await _load_model()
-    results = find_tasks(query, model.active_tasks, limit=limit)
-    return _text([{"score": round(r.score, 3), **_task_summary(r.task, model)} for r in results])
+    return await _service_text(
+        _service().search_tasks(
+            query=str(args.get("query", "")),
+            limit=int(args.get("limit", 10)),
+        )
+    )
 
 
 async def _handle_get_task(args: dict[str, Any]) -> list[TextContent]:
-    task_id = str(args.get("task_id", ""))
-    model = await _load_model()
-    task = model.tasks.get(task_id)
-    if task is None:
-        return _text({"error": f"Task not found: {task_id}"})
-    return _text(_task_summary(task, model))
+    return await _service_text(_service().get_task(task_id=str(args.get("task_id", ""))))
 
 
 async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
-    from omnifocus.cli import _parse_due
-
-    name = str(args.get("name", ""))
-    if not name:
-        return _text({"error": "name is required"})
-
     model = await _load_model()
-    parent_task_id: str | None = None
-    inbox = True
-
+    project_id: str | None = None
     if args.get("project"):
         needle = str(args["project"]).lower()
         matches = [
-            p for p in model.projects.values() if needle in p.name.lower() and p.status == "active"
+            project
+            for project in model.projects.values()
+            if needle in project.name.lower() and project.status == "active"
         ]
         if not matches:
             return _text({"error": f"No active project matching {args['project']!r}"})
-        parent_task_id = matches[0].id
-        inbox = False
-
-    due_dt: datetime | None = None
-    if args.get("due"):
-        try:
-            due_dt = _parse_due(str(args["due"]))
-        except click.BadParameter:
-            try:
-                due_dt = datetime.fromisoformat(str(args["due"]))
-            except ValueError:
-                return _text({"error": f"Invalid due date: {args['due']!r}"})
-
-    async with OFocusStore.from_env() as store:
-        result = await store.add_task(
-            name=name,
-            parent_task_id=parent_task_id,
-            inbox=inbox,
+        project_id = matches[0].id
+    return await _service_text(
+        _service().add_task(
+            name=str(args.get("name", "")),
+            project_id=project_id,
+            due=str(args["due"]) if "due" in args else None,
             flagged=bool(args.get("flagged", False)),
-            due_dt=due_dt,
             note=str(args.get("note", "")),
         )
-
-    return _text(result)
+    )
 
 
 async def _handle_complete_task(args: dict[str, Any]) -> list[TextContent]:
@@ -665,107 +607,27 @@ async def _handle_complete_task(args: dict[str, Any]) -> list[TextContent]:
 
 
 async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
-    task_id = str(args.get("task_id", ""))
-    model = await _load_model()
-    task = model.tasks.get(task_id)
-    if task is None:
-        return _text({"error": f"Task not found: {task_id}"})
-
-    project_id_value = str(args["project_id"]) if "project_id" in args else None
-    clear_project = bool(args.get("clear_project", False))
-    inbox_requested = "inbox" in args
-    inbox_value = bool(args.get("inbox")) if inbox_requested else None
-
-    if project_id_value and clear_project:
-        return _text({"error": "project_id and clear_project cannot be combined"})
-    if project_id_value and inbox_value is True:
-        return _text({"error": "project_id and inbox=true cannot be combined"})
-    if clear_project and inbox_value is False:
-        return _text({"error": "clear_project cannot be combined with inbox=false"})
-
-    new_parent_task_id = task.parent_task_id
-    new_project_id = task.project_id
-    new_inbox = task.inbox
-
-    if project_id_value:
-        project = model.projects.get(project_id_value)
-        if project is None:
-            return _text({"error": f"Project not found: {project_id_value}"})
-        if project.status != "active":
-            return _text({"error": f"Project is not active: {project_id_value}"})
-        new_parent_task_id = project.id
-        new_project_id = project.id
-        new_inbox = False
-    elif clear_project or inbox_value is True:
-        new_parent_task_id = None
-        new_project_id = None
-        new_inbox = True
-
-    now = datetime.now(UTC)
-    estimate_value = task.estimated_minutes
-    if "estimate" in args:
-        raw_estimate = args["estimate"]
-        if raw_estimate in ("", None):
-            estimate_value = None
-        else:
-            try:
-                estimate_value = int(raw_estimate)
-            except TypeError, ValueError:
-                return _text({"error": f"Invalid estimate: {raw_estimate!r}"})
-
-    hidden_value = task.hidden
-    if args.get("dropped") is True:
-        hidden_value = now
-    elif "dropped" in args and args.get("dropped") is False:
-        hidden_value = None
-
-    if args.get("clear_tags") and "tag_ids" in args:
-        return _text({"error": "tag_ids and clear_tags cannot be combined"})
-
-    tag_ids: tuple[str, ...]
-    if args.get("clear_tags"):
-        tag_ids = ()
-    elif "tag_ids" in args:
-        tag_ids = tuple(str(tag_id) for tag_id in args["tag_ids"])
-        missing_tag_ids = [tag_id for tag_id in tag_ids if tag_id not in model.tags]
-        if missing_tag_ids:
-            joined = ", ".join(missing_tag_ids)
-            return _text({"error": f"Unknown tag IDs: {joined}"})
-    else:
-        tag_ids = task.tag_ids
-
-    updated = dataclasses.replace(
-        task,
-        name=str(args["name"]) if "name" in args else task.name,
-        parent_task_id=new_parent_task_id,
-        project_id=new_project_id,
-        inbox=new_inbox,
-        flagged=bool(args["flagged"]) if "flagged" in args else task.flagged,
-        note=str(args["note"]) if "note" in args else task.note,
-        due=_parse_optional_date(str(args["due"])) if "due" in args else task.due,
-        start=_parse_optional_date(str(args["defer"])) if "defer" in args else task.start,
-        estimated_minutes=estimate_value,
-        tag_ids=tag_ids,
-        hidden=hidden_value,
-        modified=now,
+    tag_ids = tuple(str(tag_id) for tag_id in args["tag_ids"]) if "tag_ids" in args else None
+    return await _service_text(
+        _service().update_task(
+            task_id=str(args.get("task_id", "")),
+            name=str(args["name"]) if "name" in args else None,
+            project_id=str(args["project_id"]) if "project_id" in args else None,
+            clear_project=bool(args.get("clear_project", False)),
+            inbox=bool(args["inbox"]) if "inbox" in args else None,
+            due=str(args["due"]) if "due" in args else None,
+            defer=str(args["defer"]) if "defer" in args else None,
+            flagged=bool(args["flagged"]) if "flagged" in args else None,
+            note=str(args["note"]) if "note" in args else None,
+            estimate=cast(int | str | None, args["estimate"]) if "estimate" in args else None,
+            tag_ids=tag_ids,
+            clear_tags=bool(args.get("clear_tags", False)),
+            dropped=bool(args["dropped"]) if "dropped" in args else None,
+        )
     )
-
-    async with OFocusStore.from_env() as store:
-        if args.get("dropped") is True:
-            result = await store.drop_task(updated)
-        else:
-            result = await store.update_task(updated)
-
-    return _text(result)
 
 
 async def _handle_add_project(args: dict[str, Any]) -> list[TextContent]:
-    from omnifocus.cli import _parse_due
-
-    name = str(args.get("name", ""))
-    if not name:
-        return _text({"error": "name is required"})
-
     model = await _load_model()
     folder_id: str | None = None
     if args.get("folder"):
@@ -776,93 +638,40 @@ async def _handle_add_project(args: dict[str, Any]) -> list[TextContent]:
         if len(matches) > 1:
             return _text({"error": f"Multiple folders match {args['folder']!r}"})
         folder_id = matches[0].id
-
-    def _parse_natural(value: Any) -> datetime | None:
-        if not value:
-            return None
-        try:
-            return _parse_due(str(value))
-        except click.BadParameter:
-            try:
-                return datetime.fromisoformat(str(value))
-            except ValueError:
-                return None
-
-    due_dt = _parse_natural(args.get("due"))
-    if args.get("due") and due_dt is None:
-        return _text({"error": f"Invalid due date: {args['due']!r}"})
-    defer_dt = _parse_natural(args.get("defer"))
-    if args.get("defer") and defer_dt is None:
-        return _text({"error": f"Invalid defer date: {args['defer']!r}"})
-
-    async with OFocusStore.from_env() as store:
-        result = await store.add_project(
-            name=name,
+    return await _service_text(
+        _service().add_project(
+            name=str(args.get("name", "")),
             folder_id=folder_id,
-            status=str(args.get("status", "active")),
+            due=str(args["due"]) if "due" in args else None,
+            defer=str(args["defer"]) if "defer" in args else None,
             flagged=bool(args.get("flagged", False)),
-            due_dt=due_dt,
-            start_dt=defer_dt,
             note=str(args.get("note", "")),
+            status=str(args.get("status", "active")),
         )
-
-    return _text(result)
+    )
 
 
 async def _handle_get_project(args: dict[str, Any]) -> list[TextContent]:
-    project_id = str(args.get("project_id", ""))
-    model = await _load_model()
-    project = model.projects.get(project_id)
-    if project is None:
-        return _text({"error": f"Project not found: {project_id}"})
-    return _text(_project_summary(project, model))
+    return await _service_text(_service().get_project(project_id=str(args.get("project_id", ""))))
 
 
 async def _handle_update_project(args: dict[str, Any]) -> list[TextContent]:
-    project_id = str(args.get("project_id", ""))
-    model = await _load_model()
-    project = model.projects.get(project_id)
-    if project is None:
-        return _text({"error": f"Project not found: {project_id}"})
-
-    folder_id_value = str(args["folder_id"]) if "folder_id" in args else None
-    clear_folder = bool(args.get("clear_folder", False))
-    if folder_id_value and clear_folder:
-        return _text({"error": "folder_id and clear_folder cannot be combined"})
-    if folder_id_value:
-        folder = model.folders.get(folder_id_value)
-        if folder is None:
-            return _text({"error": f"Folder not found: {folder_id_value}"})
-        new_folder_id = folder.id
-    elif clear_folder:
-        new_folder_id = None
-    else:
-        new_folder_id = project.folder_id
-
-    updated = dataclasses.replace(
-        project,
-        name=str(args["name"]) if "name" in args else project.name,
-        folder_id=new_folder_id,
-        status=str(args["status"]) if "status" in args else project.status,
-        modified=datetime.now(UTC),
-        flagged=bool(args["flagged"]) if "flagged" in args else project.flagged,
-        due=_parse_optional_date(str(args["due"])) if "due" in args else project.due,
-        start=_parse_optional_date(str(args["defer"])) if "defer" in args else project.start,
-        note=str(args["note"]) if "note" in args else project.note,
+    tag_ids = tuple(str(tag_id) for tag_id in args["tag_ids"]) if "tag_ids" in args else None
+    return await _service_text(
+        _service().update_project(
+            project_id=str(args.get("project_id", "")),
+            name=str(args["name"]) if "name" in args else None,
+            folder_id=str(args["folder_id"]) if "folder_id" in args else None,
+            clear_folder=bool(args.get("clear_folder", False)),
+            due=str(args["due"]) if "due" in args else None,
+            defer=str(args["defer"]) if "defer" in args else None,
+            flagged=bool(args["flagged"]) if "flagged" in args else None,
+            note=str(args["note"]) if "note" in args else None,
+            status=str(args["status"]) if "status" in args else None,
+            tag_ids=tag_ids,
+            clear_tags=bool(args.get("clear_tags", False)),
+        )
     )
-    if "status" in args and args["status"] == "done" and updated.completed is None:
-        updated = dataclasses.replace(updated, completed=datetime.now(UTC))
-
-    async with OFocusStore.from_env() as store:
-        status = str(args["status"]) if "status" in args else updated.status
-        if status == "done":
-            result = await store.complete_project(updated)
-        elif status == "dropped":
-            result = await store.drop_project(updated)
-        else:
-            result = await store.update_project(updated)
-
-    return _text(result)
 
 
 async def _handle_complete_project(args: dict[str, Any]) -> list[TextContent]:
@@ -880,339 +689,144 @@ async def _handle_complete_project(args: dict[str, Any]) -> list[TextContent]:
             return _text({"error": f"Multiple projects match {query!r}"})
         project = matches[0]
 
-    async with OFocusStore.from_env() as store:
-        result = await store.complete_project(project)
-
-    return _text(result)
+    return await _service_text(_service().complete_project(project_id=project.id))
 
 
 async def _handle_list_projects(args: dict[str, Any]) -> list[TextContent]:
-    status = str(args.get("status", "active"))
-    model = await _load_model()
-    projects = [p for p in model.projects.values() if status == "all" or p.status == status]
-    if args.get("tag_id"):
-        tag_id = str(args["tag_id"])
-        if tag_id not in model.tags:
-            return _text({"error": f"Tag not found: {tag_id}"})
-        projects = [project for project in projects if tag_id in project.tag_ids]
-    if args.get("tag"):
-        matching_tag_ids = _matching_tag_ids(model, str(args["tag"]))
-        projects = [
-            project for project in projects if matching_tag_ids.intersection(project.tag_ids)
-        ]
-    return _text([_project_summary(project, model) for project in projects])
+    return await _service_text(
+        _service().list_projects(
+            status=str(args.get("status", "active")),
+            tag=str(args["tag"]) if "tag" in args else None,
+            tag_id=str(args["tag_id"]) if "tag_id" in args else None,
+        )
+    )
 
 
 async def _handle_list_projects_for_review(args: dict[str, Any]) -> list[TextContent]:
-    model = await _load_model()
-    due_only = bool(args.get("due_only", True))
-    limit = int(args.get("limit", 50))
-    now = datetime.now(UTC)
-    candidates = [
-        project for project in model.projects.values() if project.status in {"active", "inactive"}
-    ]
-    summaries: list[tuple[dict[str, Any], ProjectReviewState]] = [
-        (_project_summary(project, model, now=now), compute_project_review_state(project, now=now))
-        for project in candidates
-    ]
-    if due_only:
-        summaries = [item for item in summaries if item[1].due]
-    summaries.sort(key=lambda item: _project_review_sort_key(item[0], item[1]))
-    return _text([summary for summary, _state in summaries[:limit]])
+    return await _service_text(
+        _service().list_projects_for_review(
+            due_only=bool(args.get("due_only", True)),
+            limit=int(args.get("limit", 50)),
+        )
+    )
 
 
 async def _handle_mark_project_reviewed(args: dict[str, Any]) -> list[TextContent]:
-    project_id = str(args.get("project_id", ""))
-    reviewed_at_raw = str(args["reviewed_at"]) if "reviewed_at" in args else None
-    reviewed_at = _parse_optional_utc_datetime(reviewed_at_raw)
-    if reviewed_at_raw is not None and reviewed_at is None:
-        return _text({"error": f"Invalid reviewed_at timestamp: {reviewed_at_raw!r}"})
-
-    model = await _load_model()
-    project = model.projects.get(project_id)
-    if project is None:
-        return _text({"error": f"Project not found: {project_id}"})
-
-    updated_project, recalculated = mark_project_reviewed(project, reviewed_at=reviewed_at)
-    async with OFocusStore.from_env() as store:
-        await store.mark_project_reviewed(project, reviewed_at=reviewed_at)
-
-    summary = _project_summary(updated_project, model, now=reviewed_at or datetime.now(UTC))
-    summary["next_review_recalculated"] = recalculated
-    summary["status"] = "reviewed"
-    return _text(summary)
+    return await _service_text(
+        _service().mark_project_reviewed(
+            project_id=str(args.get("project_id", "")),
+            reviewed_at=str(args["reviewed_at"]) if "reviewed_at" in args else None,
+        )
+    )
 
 
 async def _handle_list_folders(args: dict[str, Any]) -> list[TextContent]:
-    model = await _load_model()
-    folders = sorted(model.folders.values(), key=lambda folder: (folder.rank, folder.name.lower()))
-    return _text([dataclasses.asdict(folder) for folder in folders])
+    return await _service_text(_service().list_folders())
 
 
 async def _handle_get_folder(args: dict[str, Any]) -> list[TextContent]:
-    folder_id = str(args.get("folder_id", ""))
-    model = await _load_model()
-    folder = model.folders.get(folder_id)
-    if folder is None:
-        return _text({"error": f"Folder not found: {folder_id}"})
-    return _text(_folder_summary(folder, model))
+    return await _service_text(_service().get_folder(folder_id=str(args.get("folder_id", ""))))
 
 
 async def _handle_get_folder_tree(args: dict[str, Any]) -> list[TextContent]:
-    model = await _load_model()
-    return _text(build_folder_tree_data(model.folders, model.projects))
+    return await _service_text(_service().get_folder_tree())
 
 
 async def _handle_add_folder(args: dict[str, Any]) -> list[TextContent]:
-    name = str(args.get("name", ""))
-    if not name:
-        return _text({"error": "name is required"})
-    model = await _load_model()
-    parent_folder_id = str(args["parent_folder_id"]) if "parent_folder_id" in args else None
-    if parent_folder_id is not None and parent_folder_id not in model.folders:
-        return _text({"error": f"Folder not found: {parent_folder_id}"})
-    async with OFocusStore.from_env() as store:
-        result = await store.add_folder(name=name, parent_folder_id=parent_folder_id)
-    return _text(result)
+    return await _service_text(
+        _service().add_folder(
+            name=str(args.get("name", "")),
+            parent_folder_id=str(args["parent_folder_id"]) if "parent_folder_id" in args else None,
+        )
+    )
 
 
 async def _handle_update_folder(args: dict[str, Any]) -> list[TextContent]:
-    folder_id = str(args.get("folder_id", ""))
-    model = await _load_model()
-    folder = model.folders.get(folder_id)
-    if folder is None:
-        return _text({"error": f"Folder not found: {folder_id}"})
-
-    parent_folder_id = str(args["parent_folder_id"]) if "parent_folder_id" in args else None
-    clear_parent = bool(args.get("clear_parent", False))
-    validation_error = _validate_folder_parent_change(
-        model=model,
-        folder_id=folder_id,
-        parent_folder_id=parent_folder_id,
-        clear_parent=clear_parent,
+    return await _service_text(
+        _service().update_folder(
+            folder_id=str(args.get("folder_id", "")),
+            name=str(args["name"]) if "name" in args else None,
+            parent_folder_id=str(args["parent_folder_id"]) if "parent_folder_id" in args else None,
+            clear_parent=bool(args.get("clear_parent", False)),
+        )
     )
-    if validation_error is not None:
-        return _text({"error": validation_error})
-
-    if parent_folder_id is not None:
-        new_parent_folder_id = parent_folder_id
-    elif clear_parent:
-        new_parent_folder_id = None
-    else:
-        new_parent_folder_id = folder.parent_folder_id
-
-    updated = dataclasses.replace(
-        folder,
-        name=str(args["name"]) if "name" in args else folder.name,
-        parent_folder_id=new_parent_folder_id,
-        modified=datetime.now(UTC),
-    )
-    async with OFocusStore.from_env() as store:
-        result = await store.update_folder(updated)
-    return _text(result)
 
 
 async def _handle_drop_folder(args: dict[str, Any]) -> list[TextContent]:
-    folder_id = str(args.get("folder_id", ""))
-    model = await _load_model()
-    folder = model.folders.get(folder_id)
-    if folder is None:
-        return _text({"error": f"Folder not found: {folder_id}"})
-    async with OFocusStore.from_env() as store:
-        result = await store.drop_folder(folder)
-    return _text(result)
+    return await _service_text(_service().drop_folder(folder_id=str(args.get("folder_id", ""))))
 
 
 async def _handle_list_tags(args: dict[str, Any]) -> list[TextContent]:
-    model = await _load_model()
-    include_hidden = bool(args.get("all", False))
-    tags = [tag for tag in model.tags.values() if include_hidden or tag.hidden is None]
-    tags.sort(key=lambda item: (item.rank, item.name.lower(), item.id))
-    return _text([_tag_summary(tag, model) for tag in tags])
+    return await _service_text(_service().list_tags(include_hidden=bool(args.get("all", False))))
 
 
 async def _handle_get_tag(args: dict[str, Any]) -> list[TextContent]:
-    tag_id = str(args.get("tag_id", ""))
-    model = await _load_model()
-    tag = model.tags.get(tag_id)
-    if tag is None:
-        return _text({"error": f"Tag not found: {tag_id}"})
-    return _text(_tag_summary(tag, model))
+    return await _service_text(_service().get_tag(tag_id=str(args.get("tag_id", ""))))
 
 
 async def _handle_add_tag(args: dict[str, Any]) -> list[TextContent]:
-    name = str(args.get("name", ""))
-    if not name:
-        return _text({"error": "name is required"})
-    model = await _load_model()
-    parent_tag_id = str(args["parent_tag_id"]) if "parent_tag_id" in args else None
-    if parent_tag_id is not None and parent_tag_id not in model.tags:
-        return _text({"error": f"Tag not found: {parent_tag_id}"})
-    async with OFocusStore.from_env() as store:
-        result = await store.add_tag(
-            name=name,
-            parent_tag_id=parent_tag_id,
+    return await _service_text(
+        _service().add_tag(
+            name=str(args.get("name", "")),
+            parent_tag_id=str(args["parent_tag_id"]) if "parent_tag_id" in args else None,
             note=str(args.get("note", "")),
         )
-    return _text(result)
+    )
 
 
 async def _handle_update_tag(args: dict[str, Any]) -> list[TextContent]:
-    tag_id = str(args.get("tag_id", ""))
-    model = await _load_model()
-    tag = model.tags.get(tag_id)
-    if tag is None:
-        return _text({"error": f"Tag not found: {tag_id}"})
-
-    parent_tag_id = str(args["parent_tag_id"]) if "parent_tag_id" in args else None
-    clear_parent = bool(args.get("clear_parent", False))
-    validation_error = _validate_tag_parent_change(
-        model=model,
-        tag_id=tag_id,
-        parent_tag_id=parent_tag_id,
-        clear_parent=clear_parent,
+    return await _service_text(
+        _service().update_tag(
+            tag_id=str(args.get("tag_id", "")),
+            name=str(args["name"]) if "name" in args else None,
+            parent_tag_id=str(args["parent_tag_id"]) if "parent_tag_id" in args else None,
+            clear_parent=bool(args.get("clear_parent", False)),
+            note=str(args["note"]) if "note" in args else None,
+        )
     )
-    if validation_error is not None:
-        return _text({"error": validation_error})
-
-    if parent_tag_id is not None:
-        new_parent_tag_id = parent_tag_id
-    elif clear_parent:
-        new_parent_tag_id = None
-    else:
-        new_parent_tag_id = tag.parent_tag_id
-
-    updated = dataclasses.replace(
-        tag,
-        name=str(args["name"]) if "name" in args else tag.name,
-        parent_tag_id=new_parent_tag_id,
-        modified=datetime.now(UTC),
-        note=str(args["note"]) if "note" in args else tag.note,
-    )
-    async with OFocusStore.from_env() as store:
-        result = await store.update_tag(updated)
-    return _text(result)
 
 
 async def _handle_drop_tag(args: dict[str, Any]) -> list[TextContent]:
-    tag_id = str(args.get("tag_id", ""))
-    model = await _load_model()
-    tag = model.tags.get(tag_id)
-    if tag is None:
-        return _text({"error": f"Tag not found: {tag_id}"})
-    async with OFocusStore.from_env() as store:
-        result = await store.drop_tag(tag)
-    return _text(result)
+    return await _service_text(_service().drop_tag(tag_id=str(args.get("tag_id", ""))))
 
 
 async def _handle_sync_now(args: dict[str, Any]) -> list[TextContent]:
-    async with OFocusStore.from_env() as store:
-        model = await store.load(force_refresh=True)
-    return _text(
-        {
-            "status": "synced",
-            "tasks": len(model.tasks),
-            "projects": len(model.projects),
-            "folders": len(model.folders),
-        }
-    )
+    return await _service_text(_service().sync_now())
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _task_summary(task: Task, model: OFModel) -> dict[str, Any]:
+def _task_summary(task: Any, model: OFModel) -> dict[str, Any]:
     """Return a concise dict representation of a task."""
-    proj = model.projects.get(task.project_id or "")
-    return {
-        "id": task.id,
-        "name": task.name,
-        "project": proj.name if proj else None,
-        "inbox": task.inbox,
-        "flagged": task.flagged,
-        "due": task.due.isoformat() if task.due else None,
-        "start": task.start.isoformat() if task.start else None,
-        "completed": task.completed.isoformat() if task.completed else None,
-        "note": task.note,
-        "tag_ids": list(task.tag_ids),
-        "tag_names": [model.tags[tag_id].name for tag_id in task.tag_ids if tag_id in model.tags],
-    }
+    return task_summary(task, model)
 
 
-def _project_summary(
-    project: Project,
-    model: OFModel,
-    *,
-    now: datetime | None = None,
-) -> dict[str, Any]:
+def _project_summary(project: Any, model: OFModel, *, now: Any = None) -> dict[str, Any]:
     """Return a concise dict representation of a project."""
-    folder = model.folders.get(project.folder_id or "")
-    review_state = compute_project_review_state(project, now=now)
-    return {
-        **dataclasses.asdict(project),
-        "folder_name": folder.name if folder is not None else None,
-        "tag_names": [
-            model.tags[tag_id].name for tag_id in project.tag_ids if tag_id in model.tags
-        ],
-        "review_due": review_state.due,
-        "review_basis": review_state.basis,
-    }
+    return project_summary(project, model, now=now)
 
 
-def _project_review_sort_key(
-    summary: dict[str, Any],
-    review_state: ProjectReviewState,
-) -> tuple[int, datetime, int, str, str]:
+def _project_review_sort_key(summary: dict[str, Any], review_state: Any) -> tuple[Any, ...]:
     """Return a stable sort key for review queues."""
-    due_at = review_state.due_at or datetime.max.replace(tzinfo=UTC)
-    if review_state.basis == "unknown":
-        bucket = 2
-    elif review_state.due:
-        bucket = 0
-    else:
-        bucket = 1
-    rank = int(summary.get("rank", 0))
-    name = str(summary.get("name", "")).lower()
-    project_id = str(summary.get("id", ""))
-    return (bucket, due_at, rank, name, project_id)
+    return project_review_sort_key(summary, review_state)
 
 
-def _folder_summary(folder: Folder, model: OFModel) -> dict[str, Any]:
+def _folder_summary(folder: Any, model: OFModel) -> dict[str, Any]:
     """Return a concise dict representation of a folder."""
-    child_folders = sorted(
-        (
-            candidate
-            for candidate in model.folders.values()
-            if candidate.parent_folder_id == folder.id
-        ),
-        key=lambda item: (item.rank, item.name.lower(), item.id),
-    )
-    child_projects = sorted(
-        (project for project in model.projects.values() if project.folder_id == folder.id),
-        key=lambda item: (item.rank, item.name.lower(), item.id),
-    )
-    return {
-        **dataclasses.asdict(folder),
-        "child_folder_ids": [candidate.id for candidate in child_folders],
-        "project_ids": [project.id for project in child_projects],
-    }
+    return folder_summary(folder, model)
 
 
-def _tag_summary(tag: Tag, model: OFModel) -> dict[str, Any]:
+def _tag_summary(tag: Any, model: OFModel) -> dict[str, Any]:
     """Return a concise dict representation of a tag."""
-    child_tags = sorted(
-        (candidate for candidate in model.tags.values() if candidate.parent_tag_id == tag.id),
-        key=lambda item: (item.rank, item.name.lower(), item.id),
-    )
-    return {
-        **dataclasses.asdict(tag),
-        "parent_name": (
-            model.tags[tag.parent_tag_id].name if tag.parent_tag_id in model.tags else None
-        ),
-        "child_tag_ids": [candidate.id for candidate in child_tags],
-    }
+    return tag_summary(tag, model)
+
+
+def _parse_optional_date(value: str | None) -> Any:
+    """Parse an optional ISO 8601 date/datetime string."""
+    return parse_optional_date(value)
+
+
+def _parse_optional_utc_datetime(value: str | None) -> Any:
+    """Parse an optional ISO 8601 UTC timestamp string."""
+    return parse_optional_utc_datetime(value)
 
 
 def _validate_folder_parent_change(
@@ -1223,23 +837,12 @@ def _validate_folder_parent_change(
     clear_parent: bool,
 ) -> str | None:
     """Validate requested folder reparenting."""
-    if parent_folder_id and clear_parent:
-        return "parent_folder_id and clear_parent cannot be combined"
-    if parent_folder_id is None:
-        return None
-    if parent_folder_id not in model.folders:
-        return f"Folder not found: {parent_folder_id}"
-    if parent_folder_id == folder_id:
-        return "Folder cannot be its own parent"
-    seen: set[str] = {folder_id}
-    current_id: str | None = parent_folder_id
-    while current_id is not None:
-        if current_id in seen:
-            return "Folder move would create a cycle"
-        seen.add(current_id)
-        parent = model.folders.get(current_id)
-        current_id = None if parent is None else parent.parent_folder_id
-    return None
+    return validate_folder_parent_change(
+        model=model,
+        folder_id=folder_id,
+        parent_folder_id=parent_folder_id,
+        clear_parent=clear_parent,
+    )
 
 
 def _validate_tag_parent_change(
@@ -1250,23 +853,12 @@ def _validate_tag_parent_change(
     clear_parent: bool,
 ) -> str | None:
     """Validate requested tag reparenting."""
-    if parent_tag_id and clear_parent:
-        return "parent_tag_id and clear_parent cannot be combined"
-    if parent_tag_id is None:
-        return None
-    if parent_tag_id not in model.tags:
-        return f"Tag not found: {parent_tag_id}"
-    if parent_tag_id == tag_id:
-        return "Tag cannot be its own parent"
-    seen: set[str] = {tag_id}
-    current_id: str | None = parent_tag_id
-    while current_id is not None:
-        if current_id in seen:
-            return "Tag move would create a cycle"
-        seen.add(current_id)
-        parent = model.tags.get(current_id)
-        current_id = None if parent is None else parent.parent_tag_id
-    return None
+    return validate_tag_parent_change(
+        model=model,
+        tag_id=tag_id,
+        parent_tag_id=parent_tag_id,
+        clear_parent=clear_parent,
+    )
 
 
 # ---------------------------------------------------------------------------

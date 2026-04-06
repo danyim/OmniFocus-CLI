@@ -90,4 +90,5 @@ Notes:
 - perspectives
 - statistics commands
 - dedicated inbox subcommands
-- dedicated `task view/delete` and `project view/delete` CLI workflows
+- dedicated `task view` and `project view` CLI workflows
+- a dedicated `project-drop` command separate from `project-update --status dropped`

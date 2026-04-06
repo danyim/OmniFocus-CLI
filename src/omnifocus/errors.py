@@ -67,3 +67,17 @@ class OFNotRunning(OFError):
     Not used in the containerised path (WebDAV-based), but kept for completeness
     should a direct-AppleScript mode ever be added.
     """
+
+
+class OFHTTPError(OFError):
+    """Raised for HTTP API validation or request-handling errors.
+
+    Attributes:
+        status_code: HTTP status code that should be returned to the caller.
+        code: Stable machine-readable error code for JSON responses.
+    """
+
+    def __init__(self, message: str, *, status_code: int, code: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.code = code
