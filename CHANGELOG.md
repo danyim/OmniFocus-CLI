@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+
+- Remove the temporary `pip-audit` ignore for `CVE-2026-4539` now that a
+  fixed `Pygments` release is available in the resolved dependency graph
+
 ## [1.1.0] - 2026-04-07
 
 ### Added
