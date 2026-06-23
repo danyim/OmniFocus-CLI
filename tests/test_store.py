@@ -27,6 +27,7 @@ from omnifocus.sync.graph import (
     tail_reachable_from_baseline,
     transaction_filenames_for_frontier,
 )
+from omnifocus.sync.protocol import build_bundle_state
 from omnifocus.sync.webdav import WebDAVClient
 from omnifocus.writer import WritePlan
 from tests.conftest import make_zip
@@ -895,6 +896,40 @@ class TestWritePath:
         task = model.tasks[result["task_id"]]
         assert task.name == "Visible after refresh"
         assert task.due == due_dt
+
+    @pytest.mark.asyncio
+    async def test_add_task_with_recurrence_round_trips(self, tmp_path: Path) -> None:
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setenv("OF_CHAIN_SHAPE", "linear")
+        store, client = _make_store(tmp_path)
+        result = await store.add_task(
+            name="Descale kettle",
+            repetition_rule="FREQ=DAILY;INTERVAL=45",
+            repetition_method="fixed",
+            repetition_schedule_type="due-after-completion",
+        )
+        monkeypatch.undo()
+
+        zip_uploads = [
+            call for call in client.put_file.await_args_list if call.args[0].endswith(".zip")
+        ]
+        uploaded_payloads = {call.args[0]: call.args[1] for call in zip_uploads}
+        client.list_entries.return_value = [
+            "00000000000000=base+tail.zip",
+            *uploaded_payloads.keys(),
+        ]
+
+        async def _get_uploaded_or_baseline(name: str) -> bytes:
+            if name in uploaded_payloads:
+                return uploaded_payloads[name]
+            return make_zip(_EMPTY_XML)
+
+        client.get_file = AsyncMock(side_effect=_get_uploaded_or_baseline)
+        model = await store.load(force_refresh=True)
+        task = model.tasks[result["task_id"]]
+        assert task.repetition_rule == "FREQ=DAILY;INTERVAL=45"
+        assert task.repetition_method == "fixed"
+        assert task.repetition_schedule_type == "due-after-completion"
 
     @pytest.mark.asyncio
     async def test_add_task_chain_then_client_uploads_client_once(
@@ -2438,3 +2473,59 @@ class TestContextManager:
         async with store:
             pass
         client.aclose.assert_called_once()
+
+
+class TestClientFetchSyncRetry:
+    @pytest.mark.asyncio
+    async def test_fetch_client_file_success(self, tmp_path: Path) -> None:
+        store, client = _make_store(tmp_path)
+        client.get_file = AsyncMock(return_value=b"plist")
+
+        assert await store._fetch_client_file("a.client") == b"plist"
+
+    @pytest.mark.asyncio
+    async def test_fetch_client_file_retries_transient_404(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("omnifocus.store.asyncio.sleep", AsyncMock())
+        store, client = _make_store(tmp_path)
+        client.get_file = AsyncMock(
+            side_effect=[OFWebDAVError("gone", status_code=404), b"plist"]
+        )
+
+        assert await store._fetch_client_file("a.client") == b"plist"
+        assert client.get_file.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_client_file_skips_on_persistent_404(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("omnifocus.store.asyncio.sleep", AsyncMock())
+        store, client = _make_store(tmp_path)
+        client.get_file = AsyncMock(side_effect=OFWebDAVError("gone", status_code=404))
+
+        assert await store._fetch_client_file("a.client") is None
+        assert client.get_file.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_fetch_client_file_reraises_non_404(self, tmp_path: Path) -> None:
+        store, client = _make_store(tmp_path)
+        client.get_file = AsyncMock(side_effect=OFWebDAVError("boom", status_code=500))
+
+        with pytest.raises(OFWebDAVError):
+            await store._fetch_client_file("a.client")
+
+    @pytest.mark.asyncio
+    async def test_load_remote_client_documents_skips_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store, _client = _make_store(tmp_path)
+        state = build_bundle_state(
+            [
+                "00000000000000=base+tail.zip",
+                "20260101000000=peer123.client",
+            ]
+        )
+        monkeypatch.setattr(store, "_fetch_client_file", AsyncMock(return_value=None))
+
+        assert await store._load_remote_client_documents(state) == {}

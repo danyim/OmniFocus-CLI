@@ -169,6 +169,70 @@ class TestStoreBackedApiService:
         assert store.add_task.await_args.kwargs["start_dt"] == datetime(2027, 6, 24, 10, 0, 0)
 
     @pytest.mark.asyncio
+    async def test_add_task_under_parent_task(self) -> None:
+        store = AsyncMock()
+        store.add_task.return_value = {"status": "created", "task_id": "new", "name": "Sub"}
+        service = _service(store=store)
+
+        await service.add_task(name="Sub", parent_task_id="t1")
+
+        assert store.add_task.await_args.kwargs["parent_task_id"] == "t1"
+        assert store.add_task.await_args.kwargs["inbox"] is False
+
+    @pytest.mark.asyncio
+    async def test_add_task_rejects_project_and_parent_together(self) -> None:
+        service = _service()
+
+        with pytest.raises(OFHTTPError, match="cannot be combined"):
+            await service.add_task(name="Sub", project_id="p1", parent_task_id="t1")
+
+    @pytest.mark.asyncio
+    async def test_add_task_rejects_unknown_parent(self) -> None:
+        service = _service()
+
+        with pytest.raises(OFHTTPError, match="Parent task not found"):
+            await service.add_task(name="Sub", parent_task_id="ghost")
+
+    @pytest.mark.asyncio
+    async def test_add_task_sets_recurrence(self) -> None:
+        store = AsyncMock()
+        store.add_task.return_value = {"status": "created", "task_id": "new", "name": "Chore"}
+        service = _service(store=store)
+
+        await service.add_task(name="Chore", repeat_every="30d", repeat_from="completion")
+
+        kwargs = store.add_task.await_args.kwargs
+        assert kwargs["repetition_rule"] == "FREQ=DAILY;INTERVAL=30"
+        assert kwargs["repetition_method"] == "fixed"
+        assert kwargs["repetition_schedule_type"] == "due-after-completion"
+
+    @pytest.mark.asyncio
+    async def test_update_task_sets_recurrence(self) -> None:
+        store = AsyncMock()
+        store.update_task.return_value = {"status": "updated", "task_id": "t1", "name": "Task"}
+        service = _service(store=store)
+
+        await service.update_task(task_id="t1", repeat_every="45d")
+
+        updated = store.update_task.await_args.args[0]
+        assert updated.repetition_rule == "FREQ=DAILY;INTERVAL=45"
+
+    @pytest.mark.asyncio
+    async def test_update_task_preserves_existing_recurrence(self) -> None:
+        model = _make_model()
+        model.tasks["t1"] = dataclasses.replace(
+            model.tasks["t1"], repetition_rule="FREQ=WEEKLY;INTERVAL=1"
+        )
+        store = AsyncMock()
+        store.update_task.return_value = {"status": "updated", "task_id": "t1", "name": "Task"}
+        service = _service(model=model, store=store)
+
+        await service.update_task(task_id="t1", flagged=True)
+
+        updated = store.update_task.await_args.args[0]
+        assert updated.repetition_rule == "FREQ=WEEKLY;INTERVAL=1"
+
+    @pytest.mark.asyncio
     async def test_list_tasks_rejects_invalid_project_status(self) -> None:
         service = _service()
 
@@ -207,6 +271,32 @@ class TestStoreBackedApiService:
         result = await service.list_tasks(project_status="inactive", limit=100)
 
         assert {item["id"] for item in result} == {"t_inactive"}
+
+    @pytest.mark.asyncio
+    async def test_list_tasks_gtd_filters(self) -> None:
+        past = datetime(2020, 1, 1, 9, 0, 0)
+        future = datetime(2099, 1, 1, 9, 0, 0)
+        model = _make_model()
+        # t1: project p1, no due, no defer (from fixture)
+        model.tasks["overdue_task"] = dataclasses.replace(
+            model.tasks["t1"], id="overdue_task", due=past, start=None
+        )
+        model.tasks["deferred_task"] = dataclasses.replace(
+            model.tasks["t1"], id="deferred_task", due=None, start=future
+        )
+        model.tasks["inbox_task"] = dataclasses.replace(
+            model.tasks["t1"], id="inbox_task", parent_task_id=None, project_id=None, inbox=True
+        )
+        service = _service(model=model)
+
+        async def ids(**kwargs: object) -> set[str]:
+            return {item["id"] for item in await service.list_tasks(limit=100, **kwargs)}  # type: ignore[arg-type]
+
+        assert await ids(overdue=True) == {"overdue_task"}
+        assert "deferred_task" not in await ids(available=True)
+        assert await ids(no_due=True) >= {"t1", "deferred_task", "inbox_task"}
+        assert await ids(no_defer=True) >= {"t1", "overdue_task", "inbox_task"}
+        assert "inbox_task" not in await ids(has_project=True)
 
     @pytest.mark.asyncio
     async def test_complete_task_uses_store(self) -> None:

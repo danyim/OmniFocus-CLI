@@ -158,6 +158,17 @@ async def list_tools() -> list[Tool]:
                     "today": {"type": "boolean", "description": "Due today or overdue"},
                     "flagged": {"type": "boolean", "description": "Flagged tasks only"},
                     "due": {"type": "boolean", "description": "Tasks with any due date"},
+                    "no_due": {"type": "boolean", "description": "Tasks with no due date"},
+                    "no_defer": {"type": "boolean", "description": "Tasks with no defer date"},
+                    "available": {
+                        "type": "boolean",
+                        "description": "Available now (no defer date or defer date reached)",
+                    },
+                    "overdue": {"type": "boolean", "description": "Due date in the past"},
+                    "has_project": {
+                        "type": "boolean",
+                        "description": "Tasks assigned to a project (excludes inbox)",
+                    },
                     "project": {"type": "string", "description": "Project name substring"},
                     "project_status": {
                         "type": "string",
@@ -204,6 +215,10 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "name": {"type": "string", "description": "Task name"},
                     "project": {"type": "string", "description": "Project name (substring)"},
+                    "parent_task_id": {
+                        "type": "string",
+                        "description": "Nest under this task/project ID (excludes project)",
+                    },
                     "due": {
                         "type": "string",
                         "description": "Due date ISO 8601 or natural (today/tomorrow/mon-sun)",
@@ -214,6 +229,28 @@ async def list_tools() -> list[Tool]:
                     },
                     "flagged": {"type": "boolean"},
                     "note": {"type": "string"},
+                    "repeat_every": {
+                        "type": "string",
+                        "description": "Recurrence interval, e.g. '30d', '6w', '3m', '1y'",
+                    },
+                    "repeat_from": {
+                        "type": "string",
+                        "enum": [
+                            "fixed",
+                            "completion",
+                            "start-after-completion",
+                            "due-after-completion",
+                        ],
+                        "description": "Recurrence anchor (default fixed calendar schedule)",
+                    },
+                    "repetition_rule": {
+                        "type": "string",
+                        "description": "Raw OmniFocus RRULE, overrides repeat_every",
+                    },
+                    "repetition_method": {
+                        "type": "string",
+                        "description": "Raw OmniFocus repetition-method override",
+                    },
                 },
                 "required": ["name"],
             },
@@ -264,6 +301,28 @@ async def list_tools() -> list[Tool]:
                     },
                     "clear_tags": {"type": "boolean"},
                     "dropped": {"type": "boolean"},
+                    "repeat_every": {
+                        "type": "string",
+                        "description": "Recurrence interval, e.g. '30d', '6w', '3m', '1y'",
+                    },
+                    "repeat_from": {
+                        "type": "string",
+                        "enum": [
+                            "fixed",
+                            "completion",
+                            "start-after-completion",
+                            "due-after-completion",
+                        ],
+                        "description": "Recurrence anchor (default fixed calendar schedule)",
+                    },
+                    "repetition_rule": {
+                        "type": "string",
+                        "description": "Raw OmniFocus RRULE, overrides repeat_every",
+                    },
+                    "repetition_method": {
+                        "type": "string",
+                        "description": "Raw OmniFocus repetition-method override",
+                    },
                 },
                 "required": ["task_id"],
             },
@@ -559,6 +618,11 @@ async def _handle_list_tasks(args: dict[str, Any]) -> list[TextContent]:
             today=bool(args.get("today")),
             flagged=bool(args.get("flagged")),
             due=bool(args.get("due")),
+            no_due=bool(args.get("no_due")),
+            no_defer=bool(args.get("no_defer")),
+            available=bool(args.get("available")),
+            overdue=bool(args.get("overdue")),
+            has_project=bool(args.get("has_project")),
             project=str(args["project"]) if "project" in args else None,
             project_status=str(args.get("project_status", "all")),
             tag=str(args["tag"]) if "tag" in args else None,
@@ -598,10 +662,17 @@ async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
         _service().add_task(
             name=str(args.get("name", "")),
             project_id=project_id,
+            parent_task_id=str(args["parent_task_id"]) if "parent_task_id" in args else None,
             due=str(args["due"]) if "due" in args else None,
             defer=str(args["defer"]) if "defer" in args else None,
             flagged=bool(args.get("flagged", False)),
             note=str(args.get("note", "")),
+            repeat_every=str(args["repeat_every"]) if "repeat_every" in args else None,
+            repeat_from=str(args["repeat_from"]) if "repeat_from" in args else None,
+            repetition_rule=str(args["repetition_rule"]) if "repetition_rule" in args else None,
+            repetition_method=(
+                str(args["repetition_method"]) if "repetition_method" in args else None
+            ),
         )
     )
 
@@ -637,6 +708,12 @@ async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
             tag_ids=tag_ids,
             clear_tags=bool(args.get("clear_tags", False)),
             dropped=bool(args["dropped"]) if "dropped" in args else None,
+            repeat_every=str(args["repeat_every"]) if "repeat_every" in args else None,
+            repeat_from=str(args["repeat_from"]) if "repeat_from" in args else None,
+            repetition_rule=str(args["repetition_rule"]) if "repetition_rule" in args else None,
+            repetition_method=(
+                str(args["repetition_method"]) if "repetition_method" in args else None
+            ),
         )
     )
 
