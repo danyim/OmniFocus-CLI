@@ -263,10 +263,13 @@ class TaskSummaryModel(EnvelopeModel):
     name: str
     project: str | None
     project_id: str | None
+    project_status: str | None = None
+    project_folder_name: str | None = None
     inbox: bool
     flagged: bool
     due: datetime | None
     start: datetime | None
+    defer: datetime | None = None
     completed: datetime | None
     note: str
     tag_ids: list[str]
@@ -458,6 +461,7 @@ class AddTaskRequest(EnvelopeModel):
     name: str
     project_id: str | None = None
     due: str | None = None
+    defer: str | None = None
     flagged: bool = False
     note: str = ""
 
@@ -1076,6 +1080,7 @@ def create_app(
         flagged: bool = Query(False),
         due: bool = Query(False),
         project: str | None = Query(None),
+        project_status: str = Query("all"),
         tag: str | None = Query(None),
         tag_id: str | None = Query(None),
         limit: int = Query(50),
@@ -1088,6 +1093,7 @@ def create_app(
             flagged=flagged,
             due=due,
             project=project,
+            project_status=project_status,
             tag=tag,
             tag_id=tag_id,
             limit=limit,
@@ -1133,6 +1139,7 @@ def create_app(
             name=body.name,
             project_id=body.project_id,
             due=body.due,
+            defer=body.defer,
             flagged=body.flagged,
             note=body.note,
         )

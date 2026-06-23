@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
+import dataclasses
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -134,11 +135,78 @@ def _service(
 
 class TestStoreBackedApiService:
     @pytest.mark.asyncio
-    async def test_add_task_rejects_inactive_project(self) -> None:
+    async def test_add_task_allows_inactive_project(self) -> None:
+        store = AsyncMock()
+        store.add_task.return_value = {"status": "created", "task_id": "new", "name": "Task"}
+        service = _service(store=store)
+
+        result = await service.add_task(name="Task", project_id="p2")
+
+        assert result["status"] == "created"
+        store.add_task.assert_awaited_once()
+        assert store.add_task.await_args.kwargs["parent_task_id"] == "p2"
+        assert store.add_task.await_args.kwargs["inbox"] is False
+
+    @pytest.mark.asyncio
+    async def test_add_task_rejects_done_project(self) -> None:
+        model = _make_model()
+        model.projects["p_done"] = dataclasses.replace(
+            model.projects["p2"], id="p_done", status="done"
+        )
+        service = _service(model=model)
+
+        with pytest.raises(OFHTTPError, match="Cannot move task into a done project"):
+            await service.add_task(name="Task", project_id="p_done")
+
+    @pytest.mark.asyncio
+    async def test_add_task_passes_defer_as_start(self) -> None:
+        store = AsyncMock()
+        store.add_task.return_value = {"status": "created", "task_id": "new", "name": "Task"}
+        service = _service(store=store)
+
+        await service.add_task(name="Task", defer="2027-06-24T10:00:00")
+
+        assert store.add_task.await_args.kwargs["start_dt"] == datetime(2027, 6, 24, 10, 0, 0)
+
+    @pytest.mark.asyncio
+    async def test_list_tasks_rejects_invalid_project_status(self) -> None:
         service = _service()
 
-        with pytest.raises(OFHTTPError, match="Project is not active"):
-            await service.add_task(name="Task", project_id="p2")
+        with pytest.raises(OFHTTPError, match="project_status must be active"):
+            await service.list_tasks(project_status="weird")
+
+    @pytest.mark.asyncio
+    async def test_list_tasks_project_status_active_keeps_inbox(self) -> None:
+        model = _make_model()
+        model.tasks["t_inactive"] = dataclasses.replace(
+            model.tasks["t1"], id="t_inactive", parent_task_id="p2", project_id="p2"
+        )
+        model.tasks["t_inbox"] = dataclasses.replace(
+            model.tasks["t1"], id="t_inbox", parent_task_id=None, project_id=None, inbox=True
+        )
+        service = _service(model=model)
+
+        result = await service.list_tasks(project_status="active", limit=100)
+
+        ids = {item["id"] for item in result}
+        assert "t1" in ids  # active project
+        assert "t_inbox" in ids  # inbox / loose task
+        assert "t_inactive" not in ids
+
+    @pytest.mark.asyncio
+    async def test_list_tasks_project_status_inactive(self) -> None:
+        model = _make_model()
+        model.tasks["t_inactive"] = dataclasses.replace(
+            model.tasks["t1"], id="t_inactive", parent_task_id="p2", project_id="p2"
+        )
+        model.tasks["t_inbox"] = dataclasses.replace(
+            model.tasks["t1"], id="t_inbox", parent_task_id=None, project_id=None, inbox=True
+        )
+        service = _service(model=model)
+
+        result = await service.list_tasks(project_status="inactive", limit=100)
+
+        assert {item["id"] for item in result} == {"t_inactive"}
 
     @pytest.mark.asyncio
     async def test_complete_task_uses_store(self) -> None:

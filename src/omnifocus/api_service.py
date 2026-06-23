@@ -66,6 +66,7 @@ class StoreBackedApiService:
         flagged: bool = False,
         due: bool = False,
         project: str | None = None,
+        project_status: str = "all",
         tag: str | None = None,
         tag_id: str | None = None,
         limit: int = 50,
@@ -74,8 +75,15 @@ class StoreBackedApiService:
 
         Filtering semantics intentionally match the user-facing surfaces: all supplied filters are
         applied with AND logic, `project` and `tag` use substring matching, and `tag_id` uses an
-        exact stable identifier.
+        exact stable identifier. `project_status` filters by the containing project's status
+        (`active|inactive|all`); `active` also keeps inbox/loose tasks that have no project.
         """
+        if project_status not in {"active", "inactive", "all"}:
+            raise OFHTTPError(
+                "project_status must be active, inactive, or all",
+                status_code=422,
+                code="validation_error",
+            )
         model = await self._load_model(False)
         tasks = model.active_tasks
         if inbox:
@@ -91,6 +99,10 @@ class StoreBackedApiService:
             needle = project.lower()
             matching = {pid for pid, item in model.projects.items() if needle in item.name.lower()}
             tasks = [task for task in tasks if task.project_id in matching]
+        if project_status != "all":
+            tasks = [
+                task for task in tasks if self._project_status_matches(model, task, project_status)
+            ]
         if tag_id:
             self._require_tag(model, tag_id)
             tasks = [task for task in tasks if tag_id in task.tag_ids]
@@ -120,21 +132,27 @@ class StoreBackedApiService:
         name: str,
         project_id: str | None = None,
         due: str | None = None,
+        defer: str | None = None,
         flagged: bool = False,
         note: str = "",
     ) -> dict[str, str]:
-        """Create a task, optionally resolving it into an active project container."""
+        """Create a task, optionally resolving it into a project container.
+
+        Tasks may be created in any project that is not ``done`` or ``dropped``; an explicit
+        ``project_id`` is honoured even when the project is ``inactive`` (on hold).
+        """
         if not name:
             raise OFHTTPError("name is required", status_code=422, code="validation_error")
         due_dt = self._parse_due_like(due, field="due")
+        start_dt = self._parse_due_like(defer, field="defer")
         parent_task_id: str | None = None
         inbox = True
         if project_id is not None:
             model = await self._load_model(False)
             project = self._require_project(model, project_id)
-            if project.status != "active":
+            if project.status in {"done", "dropped"}:
                 raise OFHTTPError(
-                    f"Project is not active: {project_id}",
+                    f"Cannot move task into a {project.status} project: {project_id}",
                     status_code=409,
                     code="conflict",
                 )
@@ -147,6 +165,7 @@ class StoreBackedApiService:
                 inbox=inbox,
                 flagged=flagged,
                 due_dt=due_dt,
+                start_dt=start_dt,
                 note=note,
             )
 
@@ -569,6 +588,18 @@ class StoreBackedApiService:
             raise OFHTTPError(f"Tag not found: {tag_id}", status_code=404, code="not_found")
         return tag
 
+    @staticmethod
+    def _project_status_matches(model: OFModel, task: Task, project_status: str) -> bool:
+        """Return whether a task belongs to a project with the requested status.
+
+        For ``active`` filtering, inbox/loose tasks with no containing project are kept so the
+        GTD "active + inbox" review view does not silently drop the inbox.
+        """
+        project = model.projects.get(task.project_id or "")
+        if project is None:
+            return project_status == "active"
+        return project.status == project_status
+
     def _parse_due_like(self, value: str | None, *, field: str) -> datetime | None:
         """Parse ISO or CLI-style natural date inputs."""
         if value is None or value == "":
@@ -635,9 +666,9 @@ class StoreBackedApiService:
 
         if project_id:
             project = self._require_project(model, project_id)
-            if project.status != "active":
+            if project.status in {"done", "dropped"}:
                 raise OFHTTPError(
-                    f"Project is not active: {project_id}",
+                    f"Cannot move task into a {project.status} project: {project_id}",
                     status_code=409,
                     code="conflict",
                 )

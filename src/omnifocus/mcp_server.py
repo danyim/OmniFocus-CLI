@@ -159,6 +159,14 @@ async def list_tools() -> list[Tool]:
                     "flagged": {"type": "boolean", "description": "Flagged tasks only"},
                     "due": {"type": "boolean", "description": "Tasks with any due date"},
                     "project": {"type": "string", "description": "Project name substring"},
+                    "project_status": {
+                        "type": "string",
+                        "enum": ["active", "inactive", "all"],
+                        "description": (
+                            "Filter by containing project status (default all). "
+                            "'active' also keeps inbox/loose tasks."
+                        ),
+                    },
                     "tag": {"type": "string", "description": "Tag name substring"},
                     "tag_id": {"type": "string", "description": "Exact tag ID"},
                     "limit": {"type": "integer", "description": "Max tasks to return (default 50)"},
@@ -199,6 +207,10 @@ async def list_tools() -> list[Tool]:
                     "due": {
                         "type": "string",
                         "description": "Due date ISO 8601 or natural (today/tomorrow/mon-sun)",
+                    },
+                    "defer": {
+                        "type": "string",
+                        "description": "Defer date ISO 8601 or natural (today/tomorrow/mon-sun)",
                     },
                     "flagged": {"type": "boolean"},
                     "note": {"type": "string"},
@@ -548,6 +560,7 @@ async def _handle_list_tasks(args: dict[str, Any]) -> list[TextContent]:
             flagged=bool(args.get("flagged")),
             due=bool(args.get("due")),
             project=str(args["project"]) if "project" in args else None,
+            project_status=str(args.get("project_status", "all")),
             tag=str(args["tag"]) if "tag" in args else None,
             tag_id=str(args["tag_id"]) if "tag_id" in args else None,
             limit=int(args.get("limit", 50)),
@@ -576,16 +589,17 @@ async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
         matches = [
             project
             for project in model.projects.values()
-            if needle in project.name.lower() and project.status == "active"
+            if needle in project.name.lower() and project.status not in {"done", "dropped"}
         ]
         if not matches:
-            return _text({"error": f"No active project matching {args['project']!r}"})
+            return _text({"error": f"No project matching {args['project']!r}"})
         project_id = matches[0].id
     return await _service_text(
         _service().add_task(
             name=str(args.get("name", "")),
             project_id=project_id,
             due=str(args["due"]) if "due" in args else None,
+            defer=str(args["defer"]) if "defer" in args else None,
             flagged=bool(args.get("flagged", False)),
             note=str(args.get("note", "")),
         )

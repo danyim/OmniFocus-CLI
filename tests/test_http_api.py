@@ -696,6 +696,7 @@ class TestHTTPAPIRoutes:
                 "flagged": True,
                 "due": True,
                 "project": "Work",
+                "project_status": "all",
                 "tag": "@home",
                 "tag_id": "tag1",
                 "limit": 7,
