@@ -656,7 +656,7 @@ class StoreBackedApiService:
             else:
                 try:
                     estimate_value = int(estimate)
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     raise OFHTTPError(
                         f"Invalid estimate: {estimate!r}",
                         status_code=422,
