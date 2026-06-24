@@ -43,6 +43,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Parenthesize multi-type `except` clauses so the `api_service` and `store`
   modules import on every Python 3 interpreter
 
+### Security
+
+- Bump `cryptography` to `>=48.0.1` (GHSA-537c-gmf6-5ccf) and `starlette` to
+  `>=1.3.1` (PYSEC-2026-161, CVE-2026-48818/48817/54283/54282), moving `fastapi`
+  to `0.138.x` to allow the Starlette 1.x line that carries the fixes
+
 ## [1.1.0] - 2026-04-07
 
 ### Added
