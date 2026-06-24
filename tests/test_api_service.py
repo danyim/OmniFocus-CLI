@@ -203,8 +203,9 @@ class TestStoreBackedApiService:
 
         kwargs = store.add_task.await_args.kwargs
         assert kwargs["repetition_rule"] == "FREQ=DAILY;INTERVAL=30"
-        assert kwargs["repetition_method"] == "fixed"
-        assert kwargs["repetition_schedule_type"] == "due-after-completion"
+        assert kwargs["repetition_method"] == "due-after-completion"
+        assert kwargs["repetition_schedule_type"] == "from-completion"
+        assert kwargs["repetition_anchor_date"] == "dateDue"
 
     @pytest.mark.asyncio
     async def test_update_task_sets_recurrence(self) -> None:

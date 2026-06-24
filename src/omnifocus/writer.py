@@ -26,7 +26,7 @@ from omnifocus.models import Folder, Project, Tag, Task
 
 _NS = "http://www.omnigroup.com/namespace/OmniFocus/v2"
 _APP_ID = "com.omnigroup.OmniFocus4"
-_APP_VERSION = "185.9.1"
+_APP_VERSION = "185.17.0"
 _APP_LIKE_INBOX_RANK_BASE = 2_147_482_647
 WriteStrategy = str
 ChainShape = str
@@ -564,6 +564,7 @@ class TransactionBuilder:
         repetition_rule: str | None = None,
         repetition_method: str | None = None,
         repetition_schedule_type: str | None = None,
+        repetition_anchor_date: str | None = None,
     ) -> None:
         """Add an ``op="update"`` task element with only changed fields."""
         self._elements.append(
@@ -587,7 +588,7 @@ class TransactionBuilder:
                 repetition_rule=repetition_rule,
                 repetition_method=repetition_method,
                 repetition_schedule_type=repetition_schedule_type,
-                repetition_anchor_date=None,
+                repetition_anchor_date=repetition_anchor_date,
                 catch_up_automatically=None,
                 next_clone_identifier=None,
                 due_date_alarm_policy=None,
@@ -912,6 +913,7 @@ class TaskWriter:
         repetition_rule: str | None = None,
         repetition_method: str | None = None,
         repetition_schedule_type: str | None = None,
+        repetition_anchor_date: str | None = None,
         write_strategy: WriteStrategy = "client_after_each_delta",
         chain_shape: ChainShape = "app_rebase",
     ) -> AddTaskPlan:
@@ -994,6 +996,7 @@ class TaskWriter:
                 repetition_rule=repetition_rule,
                 repetition_method=repetition_method,
                 repetition_schedule_type=repetition_schedule_type,
+                repetition_anchor_date=repetition_anchor_date,
             )
             builders.append((extra_builder, extra_time))
 

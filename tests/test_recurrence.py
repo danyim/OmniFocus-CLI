@@ -23,26 +23,43 @@ class TestBuildRepetition:
         ],
     )
     def test_repeat_every_maps_to_rrule(self, token: str, expected_rule: str) -> None:
+        # A plain calendar repeat (no repeat_from) defaults to the "from-assigned"
+        # schedule anchored on the due date, with the legacy "fixed" method mirror.
+        # Tokens captured from a real OmniFocus 4 client writing to a live bundle.
         result = build_repetition(repeat_every=token)
         assert result == RepetitionFields(
             repetition_rule=expected_rule,
-            repetition_method=None,
-            repetition_schedule_type=None,
+            repetition_method="fixed",
+            repetition_schedule_type="from-assigned",
+            repetition_anchor_date="dateDue",
         )
 
     def test_completion_sets_method_and_schedule_type(self) -> None:
         result = build_repetition(repeat_every="30d", repeat_from="completion")
         assert result == RepetitionFields(
             repetition_rule="FREQ=DAILY;INTERVAL=30",
-            repetition_method="fixed",
-            repetition_schedule_type="due-after-completion",
+            repetition_method="due-after-completion",
+            repetition_schedule_type="from-completion",
+            repetition_anchor_date="dateDue",
         )
 
     def test_start_after_completion(self) -> None:
         result = build_repetition(repeat_every="1w", repeat_from="start-after-completion")
-        assert result is not None
-        assert result.repetition_schedule_type == "start-after-completion"
-        assert result.repetition_method == "fixed"
+        assert result == RepetitionFields(
+            repetition_rule="FREQ=WEEKLY;INTERVAL=1",
+            repetition_method="start-after-completion",
+            repetition_schedule_type="from-completion",
+            repetition_anchor_date="dateToStart",
+        )
+
+    def test_defer_anchors_on_defer_date(self) -> None:
+        result = build_repetition(repeat_every="2w", repeat_from="defer")
+        assert result == RepetitionFields(
+            repetition_rule="FREQ=WEEKLY;INTERVAL=2",
+            repetition_method="fixed",
+            repetition_schedule_type="from-assigned",
+            repetition_anchor_date="dateToStart",
+        )
 
     def test_raw_rule_takes_precedence_over_repeat_every(self) -> None:
         result = build_repetition(repeat_every="30d", repetition_rule="FREQ=HOURLY;INTERVAL=2")

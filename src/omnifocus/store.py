@@ -429,6 +429,7 @@ class OFocusStore:
         repetition_rule: str | None = None,
         repetition_method: str | None = None,
         repetition_schedule_type: str | None = None,
+        repetition_anchor_date: str | None = None,
     ) -> dict[str, str]:
         """Create and upload a task transaction."""
         writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
@@ -447,6 +448,7 @@ class OFocusStore:
             repetition_rule=repetition_rule,
             repetition_method=repetition_method,
             repetition_schedule_type=repetition_schedule_type,
+            repetition_anchor_date=repetition_anchor_date,
             write_strategy=write_strategy,
             chain_shape=chain_shape,
         )

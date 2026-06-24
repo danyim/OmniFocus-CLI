@@ -216,6 +216,9 @@ class StoreBackedApiService:
                 repetition_schedule_type=(
                     repetition.repetition_schedule_type if repetition else None
                 ),
+                repetition_anchor_date=(
+                    repetition.repetition_anchor_date if repetition else None
+                ),
             )
 
     async def update_task(
@@ -785,14 +788,17 @@ class StoreBackedApiService:
         repetition_rule: str | None
         repetition_method: str | None
         repetition_schedule_type: str | None
+        repetition_anchor_date: str | None
         if repetition is not None:
             repetition_rule = repetition.repetition_rule
             repetition_method = repetition.repetition_method
             repetition_schedule_type = repetition.repetition_schedule_type
+            repetition_anchor_date = repetition.repetition_anchor_date
         else:
             repetition_rule = task.repetition_rule
             repetition_method = task.repetition_method
             repetition_schedule_type = task.repetition_schedule_type
+            repetition_anchor_date = task.repetition_anchor_date
 
         return dataclasses.replace(
             task,
@@ -810,6 +816,7 @@ class StoreBackedApiService:
             repetition_rule=repetition_rule,
             repetition_method=repetition_method,
             repetition_schedule_type=repetition_schedule_type,
+            repetition_anchor_date=repetition_anchor_date,
             modified=datetime.now(UTC),
         )
 

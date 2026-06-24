@@ -662,6 +662,41 @@ class TestTransactionMerge:
             "weekly-review-2",
         }
 
+
+class TestWriterParserRoundTrip:
+    """End-to-end: a transaction produced by the writer parses back to the same intent."""
+
+    def test_drop_round_trips_to_hidden_field(self) -> None:
+        from omnifocus.writer import TaskWriter
+
+        base = make_zip(_BASE_XML)
+        task = build_model(base).tasks["t1"]
+        _, drop_delta = TaskWriter(head_id="tailA", parent_tail_id="tail0").drop_task(task)
+        model = build_model(base, [drop_delta])
+        # OmniFocus 4 serializes a dropped task as a <hidden> timestamp.
+        assert model.tasks["t1"].hidden is not None
+
+    def test_recurrence_triad_round_trips(self) -> None:
+        import dataclasses
+
+        from omnifocus.writer import TaskWriter
+
+        base = make_zip(_BASE_XML)
+        task = dataclasses.replace(
+            build_model(base).tasks["t1"],
+            repetition_rule="FREQ=MONTHLY;INTERVAL=1",
+            repetition_method="due-after-completion",
+            repetition_schedule_type="from-completion",
+            repetition_anchor_date="dateDue",
+        )
+        _, delta = TaskWriter(head_id="tailA", parent_tail_id="tail0").update_task(task)
+        parsed = build_model(base, [delta]).tasks["t1"]
+        assert parsed.repetition_schedule_type == "from-completion"
+        assert parsed.repetition_anchor_date == "dateDue"
+        assert parsed.repetition_method == "due-after-completion"
+
+
+class TestTransactionMergeExtra:
     def test_update_without_name_merges_into_existing_task(self) -> None:
         base = make_zip(_BASE_XML)
         tx = make_zip("""\
