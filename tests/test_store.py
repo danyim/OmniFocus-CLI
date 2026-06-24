@@ -2489,9 +2489,7 @@ class TestClientFetchSyncRetry:
     ) -> None:
         monkeypatch.setattr("omnifocus.store.asyncio.sleep", AsyncMock())
         store, client = _make_store(tmp_path)
-        client.get_file = AsyncMock(
-            side_effect=[OFWebDAVError("gone", status_code=404), b"plist"]
-        )
+        client.get_file = AsyncMock(side_effect=[OFWebDAVError("gone", status_code=404), b"plist"])
 
         assert await store._fetch_client_file("a.client") == b"plist"
         assert client.get_file.await_count == 2

@@ -216,9 +216,7 @@ class StoreBackedApiService:
                 repetition_schedule_type=(
                     repetition.repetition_schedule_type if repetition else None
                 ),
-                repetition_anchor_date=(
-                    repetition.repetition_anchor_date if repetition else None
-                ),
+                repetition_anchor_date=(repetition.repetition_anchor_date if repetition else None),
             )
 
     async def update_task(
@@ -758,7 +756,7 @@ class StoreBackedApiService:
             else:
                 try:
                     estimate_value = int(estimate)
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     raise OFHTTPError(
                         f"Invalid estimate: {estimate!r}",
                         status_code=422,
