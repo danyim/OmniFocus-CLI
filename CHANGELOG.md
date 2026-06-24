@@ -7,10 +7,41 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-24
+
+### Added
+
+- Set task recurrence from the MCP, HTTP, and CLI surfaces via a `repeat_every`
+  shorthand (`30d`, `6w`, `3m`, `1y`) plus `repeat_from`
+  (`fixed`/`due`/`defer`/`completion`/`start-after-completion`/`due-after-completion`),
+  or raw `repetition_rule`/`repetition_method` tokens, on `add_task` and `update_task`
+- Create subtasks by passing `parent_task_id` to nest a task under an existing
+  task or project
+- Add opt-in GTD review filters to `list_tasks` (`no_due`, `no_defer`,
+  `available`, `overdue`, `has_project`) and a `project_status`
+  (`active`/`inactive`/`all`) filter
+- Accept `defer` on task creation, symmetric with `update_task`
+
 ### Changed
 
+- Allow creating and moving tasks into active and inactive (on-hold) projects;
+  only `done`/`dropped` targets are rejected, removing the
+  activate-move-deactivate workaround
+- Include `project_status`, `project_folder_name`, and a `defer` alias in the
+  task summary so review agents can filter without extra lookups
 - Remove the temporary `pip-audit` ignore for `CVE-2026-4539` now that a
   fixed `Pygments` release is available in the resolved dependency graph
+
+### Fixed
+
+- Align task recurrence serialization with the tokens real OmniFocus 4 clients
+  write to the sync bundle (`from-assigned`/`from-completion` schedule types and
+  `dateDue`/`dateToStart` anchor tokens) so repeating tasks round-trip the way
+  the app itself records them
+- Retry transient `404` responses when fetching peer `.client` state files
+  during a concurrent sync instead of failing the whole read or write
+- Parenthesize multi-type `except` clauses so the `api_service` and `store`
+  modules import on every Python 3 interpreter
 
 ## [1.1.0] - 2026-04-07
 
