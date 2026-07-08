@@ -263,10 +263,13 @@ class TaskSummaryModel(EnvelopeModel):
     name: str
     project: str | None
     project_id: str | None
+    project_status: str | None = None
+    project_folder_name: str | None = None
     inbox: bool
     flagged: bool
     due: datetime | None
     start: datetime | None
+    defer: datetime | None = None
     completed: datetime | None
     note: str
     tag_ids: list[str]
@@ -457,9 +460,15 @@ class AddTaskRequest(EnvelopeModel):
 
     name: str
     project_id: str | None = None
+    parent_task_id: str | None = None
     due: str | None = None
+    defer: str | None = None
     flagged: bool = False
     note: str = ""
+    repeat_every: str | None = None
+    repeat_from: str | None = None
+    repetition_rule: str | None = None
+    repetition_method: str | None = None
 
 
 class UpdateTaskRequest(EnvelopeModel):
@@ -481,6 +490,10 @@ class UpdateTaskRequest(EnvelopeModel):
     tag_ids: list[str] | None = None
     clear_tags: bool = False
     dropped: bool | None = None
+    repeat_every: str | None = None
+    repeat_from: str | None = None
+    repetition_rule: str | None = None
+    repetition_method: str | None = None
 
 
 class AddProjectRequest(EnvelopeModel):
@@ -1075,7 +1088,13 @@ def create_app(
         today: bool = Query(False),
         flagged: bool = Query(False),
         due: bool = Query(False),
+        no_due: bool = Query(False),
+        no_defer: bool = Query(False),
+        available: bool = Query(False),
+        overdue: bool = Query(False),
+        has_project: bool = Query(False),
         project: str | None = Query(None),
+        project_status: str = Query("all"),
         tag: str | None = Query(None),
         tag_id: str | None = Query(None),
         limit: int = Query(50),
@@ -1087,7 +1106,13 @@ def create_app(
             today=today,
             flagged=flagged,
             due=due,
+            no_due=no_due,
+            no_defer=no_defer,
+            available=available,
+            overdue=overdue,
+            has_project=has_project,
             project=project,
+            project_status=project_status,
             tag=tag,
             tag_id=tag_id,
             limit=limit,
@@ -1132,9 +1157,15 @@ def create_app(
         result = await resolved_service.add_task(
             name=body.name,
             project_id=body.project_id,
+            parent_task_id=body.parent_task_id,
             due=body.due,
+            defer=body.defer,
             flagged=body.flagged,
             note=body.note,
+            repeat_every=body.repeat_every,
+            repeat_from=body.repeat_from,
+            repetition_rule=body.repetition_rule,
+            repetition_method=body.repetition_method,
         )
         return _success_envelope(TaskMutationResult.model_validate(result), status_code=201)
 
@@ -1160,6 +1191,10 @@ def create_app(
             tag_ids=None if body.tag_ids is None else tuple(body.tag_ids),
             clear_tags=body.clear_tags,
             dropped=body.dropped,
+            repeat_every=body.repeat_every,
+            repeat_from=body.repeat_from,
+            repetition_rule=body.repetition_rule,
+            repetition_method=body.repetition_method,
         )
         return _success_envelope(TaskMutationResult.model_validate(result))
 
