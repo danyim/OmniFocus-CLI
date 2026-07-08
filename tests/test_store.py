@@ -7,8 +7,9 @@ __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 import dataclasses
 import json
 import pickle
+import sys
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -404,6 +405,28 @@ class TestLoad:
         store, _ = _make_store(tmp_path)
         state = build_bundle_state(["00000000000000=base+tail0.zip"])
         assert transaction_filenames_for_frontier(state, ()) == []
+
+    def test_deep_delta_chain_does_not_exhaust_recursion(self) -> None:
+        depth = 5_000
+        base = datetime(2026, 3, 24)
+        filenames = ["00000000000000=base+tail0.zip"]
+        filenames += [
+            f"{(base + timedelta(seconds=i)).strftime('%Y%m%d%H%M%S')}=tail{i}+tail{i + 1}.zip"
+            for i in range(depth)
+        ]
+        state = build_bundle_state(filenames)
+
+        # The graph walks are iterative, so a chain far deeper than the default
+        # recursion limit resolves without a RecursionError even at a low limit.
+        original = sys.getrecursionlimit()
+        try:
+            sys.setrecursionlimit(200)
+            frontier = current_frontier_tail_ids(state, {})
+            assert frontier == (f"tail{depth}",)
+            names = transaction_filenames_for_frontier(state, frontier)
+            assert len(names) == depth
+        finally:
+            sys.setrecursionlimit(original)
 
 
 class TestCache:

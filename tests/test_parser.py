@@ -5,6 +5,7 @@ from __future__ import annotations
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
 import io
+import sys
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import UTC
@@ -24,6 +25,7 @@ from omnifocus.parser import (
     build_model,
     load_xml_from_zip,
 )
+from omnifocus.recursion_limit import MIN_RECURSION_LIMIT
 from tests.conftest import make_zip
 
 NS = "{http://www.omnigroup.com/namespace/OmniFocus/v2}"
@@ -243,6 +245,25 @@ class TestBuildModel:
     def test_empty_transaction_list(self, sample_zip: bytes) -> None:
         model = build_model(sample_zip, transaction_bytes_list=[])
         assert len(model.tasks) > 0
+
+    def test_raises_recursion_limit_when_too_low(self, sample_zip: bytes) -> None:
+        original = sys.getrecursionlimit()
+        try:
+            sys.setrecursionlimit(100)
+            model = build_model(sample_zip)
+            assert len(model.tasks) > 0
+            assert sys.getrecursionlimit() >= MIN_RECURSION_LIMIT
+        finally:
+            sys.setrecursionlimit(original)
+
+    def test_does_not_lower_higher_recursion_limit(self, sample_zip: bytes) -> None:
+        original = sys.getrecursionlimit()
+        try:
+            sys.setrecursionlimit(MIN_RECURSION_LIMIT + 10_000)
+            build_model(sample_zip)
+            assert sys.getrecursionlimit() == MIN_RECURSION_LIMIT + 10_000
+        finally:
+            sys.setrecursionlimit(original)
 
 
 # ---------------------------------------------------------------------------
