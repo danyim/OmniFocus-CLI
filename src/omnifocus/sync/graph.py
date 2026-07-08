@@ -91,18 +91,26 @@ def topologically_sorted_delta_filenames(
     ordered: list[str] = []
     visited: set[str] = set()
 
-    def visit(tail_id: str) -> None:
-        if tail_id in visited or tail_id not in selected_tail_ids:
-            return
-        delta = deltas_by_tail[tail_id]
-        for parent_tail_id in delta.parent_tail_ids:
-            visit(parent_tail_id)
-        visited.add(tail_id)
-        ordered.append(delta.filename)
-
-    for delta in state.deltas:
-        if delta.tail_id in selected_tail_ids:
-            visit(delta.tail_id)
+    # Iterative post-order DFS (explicit stack) to avoid recursion on deep
+    # delta chains. Each frame is (tail_id, parents_emitted): the second time we
+    # pop a tail — after its parents — we record its filename.
+    for root in state.deltas:
+        if root.tail_id not in selected_tail_ids:
+            continue
+        stack: list[tuple[str, bool]] = [(root.tail_id, False)]
+        while stack:
+            tail_id, parents_emitted = stack.pop()
+            if parents_emitted:
+                visited.add(tail_id)
+                ordered.append(deltas_by_tail[tail_id].filename)
+                continue
+            if tail_id in visited or tail_id not in selected_tail_ids:
+                continue
+            stack.append((tail_id, True))
+            # Push parents in reverse so the first parent is processed first,
+            # preserving the recursive parent-before-child emission order.
+            for parent_tail_id in reversed(deltas_by_tail[tail_id].parent_tail_ids):
+                stack.append((parent_tail_id, False))
     return ordered
 
 
@@ -131,26 +139,39 @@ def reachable_delta_tail_ids(
     baseline_tail = state.baseline.tail_id
     deltas_by_tail = {delta.tail_id: delta for delta in state.deltas}
     selected: set[str] = set()
-    visiting: set[str] = set()
+    on_path: set[str] = set()
 
-    def visit(tail_id: str) -> None:
-        if tail_id == baseline_tail:
-            return
-        if tail_id in selected:
-            return
-        if tail_id in visiting:
-            raise OFError(f"Detected a cycle while resolving delta DAG at tail {tail_id!r}")
-        delta = deltas_by_tail.get(tail_id)
-        if delta is None:
-            raise OFError(f"Could not resolve the current OmniFocus delta DAG for tail {tail_id!r}")
-        visiting.add(tail_id)
-        for parent_tail_id in delta.parent_tail_ids:
-            visit(parent_tail_id)
-        visiting.remove(tail_id)
-        selected.add(tail_id)
-
-    for tail_id in frontier_tail_identifiers:
-        visit(tail_id)
+    # Iterative DFS (explicit stack) to avoid recursion on deep delta chains.
+    # ``on_path`` is the set of tails currently on the traversal path, used to
+    # detect cycles; tails are added to ``selected`` in post-order.
+    for frontier_tail in frontier_tail_identifiers:
+        stack = [frontier_tail]
+        while stack:
+            tail_id = stack[-1]
+            if tail_id == baseline_tail or tail_id in selected:
+                stack.pop()
+                continue
+            if tail_id not in on_path:
+                delta = deltas_by_tail.get(tail_id)
+                if delta is None:
+                    raise OFError(
+                        f"Could not resolve the current OmniFocus delta DAG for tail {tail_id!r}"
+                    )
+                on_path.add(tail_id)
+                for parent_tail_id in delta.parent_tail_ids:
+                    if parent_tail_id == baseline_tail or parent_tail_id in selected:
+                        continue
+                    if parent_tail_id in on_path:
+                        raise OFError(
+                            "Detected a cycle while resolving delta DAG "
+                            f"at tail {parent_tail_id!r}"
+                        )
+                    stack.append(parent_tail_id)
+                continue
+            # Second visit: all parents resolved — record in post-order.
+            on_path.discard(tail_id)
+            selected.add(tail_id)
+            stack.pop()
 
     return selected
 
@@ -165,26 +186,45 @@ def tail_reachable_from_baseline(state: BundleState, tail_id: str) -> bool:
 
     deltas_by_tail = {delta.tail_id: delta for delta in state.deltas}
     memo: dict[str, bool] = {}
+    on_path: set[str] = set()
 
-    def visit(cursor: str, visiting: set[str]) -> bool:
-        if cursor == baseline_tail:
-            return True
+    # Iterative DFS (explicit stack) to avoid recursion on deep delta chains.
+    # A tail is reachable iff every parent chain terminates at the baseline; an
+    # unresolved parent still on the path is a cycle and counts as unreachable.
+    stack = [tail_id]
+    while stack:
+        cursor = stack[-1]
         if cursor in memo:
-            return memo[cursor]
-        if cursor in visiting:
-            memo[cursor] = False
-            return False
+            stack.pop()
+            continue
         delta = deltas_by_tail.get(cursor)
         if delta is None:
             memo[cursor] = False
-            return False
-        visiting.add(cursor)
-        result = all(visit(parent_tail_id, visiting) for parent_tail_id in delta.parent_tail_ids)
-        visiting.remove(cursor)
-        memo[cursor] = result
-        return result
+            stack.pop()
+            continue
+        if cursor not in on_path:
+            on_path.add(cursor)
+            for parent_tail_id in delta.parent_tail_ids:
+                if (
+                    parent_tail_id != baseline_tail
+                    and parent_tail_id not in memo
+                    and parent_tail_id not in on_path
+                ):
+                    stack.append(parent_tail_id)
+            continue
+        # Second visit: fold parent results with AND semantics.
+        on_path.discard(cursor)
+        reachable = True
+        for parent_tail_id in delta.parent_tail_ids:
+            if parent_tail_id == baseline_tail:
+                continue
+            if not memo.get(parent_tail_id, False):
+                reachable = False
+                break
+        memo[cursor] = reachable
+        stack.pop()
 
-    return visit(tail_id, set())
+    return memo[tail_id]
 
 
 def tail_depends_on(state: BundleState, tail_id: str, ancestor_tail_id: str) -> bool:
@@ -194,15 +234,19 @@ def tail_depends_on(state: BundleState, tail_id: str, ancestor_tail_id: str) -> 
     deltas_by_tail = {delta.tail_id: delta for delta in state.deltas}
     visited: set[str] = set()
 
-    def visit(cursor: str) -> bool:
+    # Iterative reachability (explicit stack) over parent edges: is
+    # ``ancestor_tail_id`` a parent of any tail reachable from ``tail_id``?
+    stack = [tail_id]
+    while stack:
+        cursor = stack.pop()
         if cursor in visited:
-            return False
+            continue
         visited.add(cursor)
         delta = deltas_by_tail.get(cursor)
         if delta is None:
-            return False
+            continue
         if ancestor_tail_id in delta.parent_tail_ids:
             return True
-        return any(visit(parent_tail_id) for parent_tail_id in delta.parent_tail_ids)
+        stack.extend(delta.parent_tail_ids)
 
-    return visit(tail_id)
+    return False
