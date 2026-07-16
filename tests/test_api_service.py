@@ -135,6 +135,21 @@ def _service(
 
 class TestStoreBackedApiService:
     @pytest.mark.asyncio
+    async def test_add_task_uses_supplied_validation_model(self) -> None:
+        store = AsyncMock()
+        store.add_task.return_value = {"status": "created", "task_id": "new", "name": "Task"}
+        model = _make_model()
+        load_model = AsyncMock(return_value=model)
+        service = StoreBackedApiService(
+            load_model=load_model,
+            store_factory=lambda: _store_context(store),
+        )
+
+        await service.add_task(name="Task", project_id="p2", validation_model=model)
+
+        load_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_add_task_allows_inactive_project(self) -> None:
         store = AsyncMock()
         store.add_task.return_value = {"status": "created", "task_id": "new", "name": "Task"}
@@ -146,6 +161,25 @@ class TestStoreBackedApiService:
         store.add_task.assert_awaited_once()
         assert store.add_task.await_args.kwargs["parent_task_id"] == "p2"
         assert store.add_task.await_args.kwargs["inbox"] is False
+
+    @pytest.mark.asyncio
+    async def test_add_project_uses_supplied_validation_model(self) -> None:
+        store = AsyncMock()
+        store.add_project.return_value = {
+            "status": "created",
+            "project_id": "new",
+            "name": "Project",
+        }
+        model = _make_model()
+        load_model = AsyncMock(return_value=model)
+        service = StoreBackedApiService(
+            load_model=load_model,
+            store_factory=lambda: _store_context(store),
+        )
+
+        await service.add_project(name="Project", folder_id="f1", validation_model=model)
+
+        load_model.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_add_task_rejects_done_project(self) -> None:

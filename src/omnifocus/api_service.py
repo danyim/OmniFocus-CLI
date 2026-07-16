@@ -152,6 +152,7 @@ class StoreBackedApiService:
         name: str,
         project_id: str | None = None,
         parent_task_id: str | None = None,
+        validation_model: OFModel | None = None,
         due: str | None = None,
         defer: str | None = None,
         flagged: bool = False,
@@ -187,7 +188,7 @@ class StoreBackedApiService:
         resolved_parent: str | None = None
         inbox = True
         if project_id is not None:
-            model = await self._load_model(False)
+            model = validation_model or await self._load_model(False)
             project = self._require_project(model, project_id)
             if project.status in {"done", "dropped"}:
                 raise OFHTTPError(
@@ -198,7 +199,7 @@ class StoreBackedApiService:
             resolved_parent = project.id
             inbox = False
         elif parent_task_id is not None:
-            model = await self._load_model(False)
+            model = validation_model or await self._load_model(False)
             self._require_parent(model, parent_task_id)
             resolved_parent = parent_task_id
             inbox = False
@@ -327,6 +328,7 @@ class StoreBackedApiService:
         *,
         name: str,
         folder_id: str | None = None,
+        validation_model: OFModel | None = None,
         due: str | None = None,
         defer: str | None = None,
         flagged: bool = False,
@@ -343,7 +345,7 @@ class StoreBackedApiService:
                 code="validation_error",
             )
         if folder_id is not None:
-            model = await self._load_model(False)
+            model = validation_model or await self._load_model(False)
             self._require_folder(model, folder_id)
         async with self._store_factory() as store:
             return await store.add_project(

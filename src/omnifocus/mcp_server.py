@@ -663,6 +663,7 @@ async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
             name=str(args.get("name", "")),
             project_id=project_id,
             parent_task_id=str(args["parent_task_id"]) if "parent_task_id" in args else None,
+            validation_model=model,
             due=str(args["due"]) if "due" in args else None,
             defer=str(args["defer"]) if "defer" in args else None,
             flagged=bool(args.get("flagged", False)),
@@ -733,6 +734,7 @@ async def _handle_add_project(args: dict[str, Any]) -> list[TextContent]:
         _service().add_project(
             name=str(args.get("name", "")),
             folder_id=folder_id,
+            validation_model=model,
             due=str(args["due"]) if "due" in args else None,
             defer=str(args["defer"]) if "defer" in args else None,
             flagged=bool(args.get("flagged", False)),
