@@ -94,6 +94,23 @@ from omnifocus.store import OFocusStore
 # ---------------------------------------------------------------------------
 
 server: Server = Server("omnifocus")
+read_only_server: Server = Server("omnifocus-read-only")
+
+_READ_ONLY_TOOL_NAMES = frozenset(
+    {
+        "list_tasks",
+        "search_tasks",
+        "get_task",
+        "get_project",
+        "list_projects",
+        "list_projects_for_review",
+        "list_folders",
+        "get_folder",
+        "get_folder_tree",
+        "list_tags",
+        "get_tag",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +588,12 @@ async def list_tools() -> list[Tool]:
 # ---------------------------------------------------------------------------
 
 
+@read_only_server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
+async def list_read_only_tools() -> list[Tool]:
+    """List the server-enforced read-only MCP tool surface."""
+    return [tool for tool in await list_tools() if tool.name in _READ_ONLY_TOOL_NAMES]
+
+
 @server.call_tool()  # type: ignore[untyped-decorator]
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Dispatch incoming tool calls to the appropriate handler."""
@@ -609,6 +632,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return await typed_handler(arguments)
     except OFError as exc:
         return _text({"error": str(exc)})
+
+
+@read_only_server.call_tool()  # type: ignore[untyped-decorator]
+async def call_read_only_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+    """Dispatch only read-only tools for the network MCP transport."""
+    if name not in _READ_ONLY_TOOL_NAMES:
+        return _text({"error": f"Tool is not available from the read-only server: {name}"})
+    return await call_tool(name, arguments)
 
 
 async def _handle_list_tasks(args: dict[str, Any]) -> list[TextContent]:

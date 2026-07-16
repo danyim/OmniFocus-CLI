@@ -347,6 +347,41 @@ def _create_client(
     )
 
 
+class TestReadOnlyMCP:
+    def test_requires_bearer_authentication(self) -> None:
+        client = _create_client(_FakeService(), enable_mcp=True)
+
+        with client:
+            response = client.post("/mcp/", json={})
+
+        assert response.status_code == 401
+
+    def test_initializes_and_lists_read_only_tools(self) -> None:
+        client = _create_client(_FakeService(), enable_mcp=True)
+        initialize = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"},
+            },
+        }
+        list_tools = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+        headers = _auth_headers(Accept="application/json, text/event-stream")
+
+        with client:
+            initialized = client.post("/mcp/", json=initialize, headers=headers)
+            tools = client.post("/mcp/", json=list_tools, headers=headers)
+
+        assert initialized.status_code == 200
+        assert tools.status_code == 200
+        names = {tool["name"] for tool in tools.json()["result"]["tools"]}
+        assert "list_tasks" in names
+        assert "add_task" not in names
+
+
 def _write_self_signed_cert(tmp_path: Path) -> tuple[Path, Path]:
     """Create a temporary self-signed certificate and private key."""
 
