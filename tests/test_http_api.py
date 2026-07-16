@@ -415,6 +415,34 @@ class TestHTTPServerConfig:
 
         assert config.allowed_hosts == ("127.0.0.1", "localhost", "api.internal")
 
+    def test_from_env_reads_api_key_from_secret_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        cert_path, key_path = _write_self_signed_cert(tmp_path)
+        api_key_file = tmp_path / "api-key"
+        api_key_file.write_text("secret-token\n", encoding="utf-8")
+        monkeypatch.setenv("OF_HTTP_API_KEY_FILE", str(api_key_file))
+        monkeypatch.setenv("OF_HTTP_TLS_CERT_FILE", str(cert_path))
+        monkeypatch.setenv("OF_HTTP_TLS_KEY_FILE", str(key_path))
+
+        config = HTTPServerConfig.from_env()
+
+        assert config.api_key == "secret-token"
+
+    def test_from_env_rejects_api_key_and_secret_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        cert_path, key_path = _write_self_signed_cert(tmp_path)
+        api_key_file = tmp_path / "api-key"
+        api_key_file.write_text("secret-token", encoding="utf-8")
+        monkeypatch.setenv("OF_HTTP_API_KEY", "secret-token")
+        monkeypatch.setenv("OF_HTTP_API_KEY_FILE", str(api_key_file))
+        monkeypatch.setenv("OF_HTTP_TLS_CERT_FILE", str(cert_path))
+        monkeypatch.setenv("OF_HTTP_TLS_KEY_FILE", str(key_path))
+
+        with pytest.raises(OFError, match="OF_HTTP_API_KEY and OF_HTTP_API_KEY_FILE"):
+            HTTPServerConfig.from_env()
+
     def test_from_env_rejects_empty_allowed_hosts(
         self,
         monkeypatch: pytest.MonkeyPatch,

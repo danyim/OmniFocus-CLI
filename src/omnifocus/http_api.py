@@ -38,6 +38,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from omnifocus import __version__
 from omnifocus.api_service import StoreBackedApiService, default_api_service
+from omnifocus.env import read_env_or_file
 from omnifocus.errors import OFError, OFHTTPError
 
 _MAX_JSON_BODY_BYTES = 1024 * 1024
@@ -74,7 +75,7 @@ class HTTPServerConfig:
     def from_env(cls) -> HTTPServerConfig:
         """Load and validate HTTPS API configuration from environment variables."""
 
-        api_key = os.getenv("OF_HTTP_API_KEY")
+        api_key = read_env_or_file("OF_HTTP_API_KEY", error_type=OFError)
         cert_path = os.getenv("OF_HTTP_TLS_CERT_FILE")
         key_path = os.getenv("OF_HTTP_TLS_KEY_FILE")
         missing = [
