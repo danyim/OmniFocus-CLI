@@ -218,9 +218,10 @@ class OFocusStore:
             OFWebDAVError: If required WebDAV env vars are missing.
         """
         client = WebDAVClient.from_env()
-        passphrase = read_env_or_file(
-            "OF_ENCRYPTION_PASSPHRASE", error_type=OFWebDAVError
-        ) or _webdav_password_from_env()
+        passphrase = (
+            read_env_or_file("OF_ENCRYPTION_PASSPHRASE", error_type=OFWebDAVError)
+            or _webdav_password_from_env()
+        )
         return cls(client=client, passphrase=passphrase or None)
 
     # ------------------------------------------------------------------
