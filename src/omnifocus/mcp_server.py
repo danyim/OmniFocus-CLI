@@ -639,7 +639,7 @@ async def call_read_only_tool(name: str, arguments: dict[str, Any]) -> list[Text
     """Dispatch only read-only tools for the network MCP transport."""
     if name not in _READ_ONLY_TOOL_NAMES:
         return _text({"error": f"Tool is not available from the read-only server: {name}"})
-    return await call_tool(name, arguments)
+    return cast(list[TextContent], await call_tool(name, arguments))
 
 
 async def _handle_list_tasks(args: dict[str, Any]) -> list[TextContent]:

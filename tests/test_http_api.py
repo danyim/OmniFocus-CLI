@@ -348,6 +348,14 @@ def _create_client(
 
 
 class TestReadOnlyMCP:
+    def test_default_app_has_no_mcp_lifespan(self) -> None:
+        client = _create_client(_FakeService())
+
+        with client:
+            response = client.get("/v1/openapi.json", headers=_auth_headers())
+
+        assert response.status_code == 200
+
     def test_requires_bearer_authentication(self) -> None:
         client = _create_client(_FakeService(), enable_mcp=True)
 

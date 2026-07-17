@@ -1712,6 +1712,14 @@ class TestReadOnlyServer:
 
         assert "not available from the read-only server" in result[0].text
 
+    @pytest.mark.asyncio
+    async def test_dispatches_read_tools(self) -> None:
+        expected = _text({"tasks": []})
+        with patch("omnifocus.mcp_server.call_tool", new=AsyncMock(return_value=expected)):
+            result = await call_read_only_tool("list_tasks", {})
+
+        assert result == expected
+
 
 # ---------------------------------------------------------------------------
 # _task_summary
