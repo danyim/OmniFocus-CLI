@@ -109,7 +109,7 @@ podman run --rm --pull=always of --version
 ## Documentation
 
 - [CLI reference](docs/cli.md) for the exact `of` command surface
-- [HTTPS API reference](docs/http.md) for operator guidance around the `/v1` API
+- [HTTPS API reference](docs/http.md) for operator guidance, including a copy-paste local TLS and Hermes MCP setup
 - [ASVS 5.0 security mapping](docs/security/asvs-5.0.md) for implemented controls and known gaps
 - [MCP reference](docs/mcp.md) for the stdio tool catalog and input contracts
 - [Container and runtime notes](docs/container.md) for image behavior and deployment patterns
