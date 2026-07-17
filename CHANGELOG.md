@@ -7,6 +7,30 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-17
+
+### Added
+
+- Expose a stateless, read-only Streamable HTTP MCP endpoint at `/mcp/` on the
+  existing HTTPS listener, protected by the existing bearer API key and TLS 1.3
+- Support `*_FILE` variants for sensitive configuration, including WebDAV
+  credentials, the encryption passphrase, and the HTTP API key, for safe
+  container secret mounts
+- Provide copy-paste deployment guidance for a long-lived local MCP service,
+  including a self-signed localhost TLS certificate and Hermes configuration
+
+### Changed
+
+- Reuse already-loaded OmniFocus models during MCP task and project creation to
+  avoid redundant WebDAV loads
+
+### Security
+
+- Keep the network MCP surface server-side read-only and enforce its tool
+  allowlist independently of client configuration
+- Document certificate trust-anchor verification for localhost and discourage
+  insecure TLS bypasses and URL-embedded credentials
+
 ## [1.2.0] - 2026-06-24
 
 ### Added
