@@ -30,6 +30,7 @@ The HTTPS API is intentionally strict:
 | `OF_HTTP_HOST` | No | Bind host. Defaults to `127.0.0.1`. |
 | `OF_HTTP_PORT` | No | Bind port. Defaults to `8443`. |
 | `OF_HTTP_API_KEY` | Yes | Required Bearer token value. |
+| `OF_HTTP_API_KEY_FILE` | No | File containing the Bearer token; conflicts with `OF_HTTP_API_KEY`. |
 | `OF_HTTP_TLS_CERT_FILE` | Yes | Path to the TLS certificate PEM file. |
 | `OF_HTTP_TLS_KEY_FILE` | Yes | Path to the TLS private key PEM file. |
 | `OF_HTTP_ALLOWED_HOSTS` | No | Comma-separated trusted host allowlist. Defaults to `127.0.0.1,localhost`. |
@@ -38,6 +39,86 @@ The HTTPS API is intentionally strict:
 | `OF_WEBDAV_PASS` | No | Explicit WebDAV password override. |
 | `OF_ENCRYPTION_PASSPHRASE` | No | Bundle decryption passphrase. |
 | `OF_CACHE_DIR` | No | Writable cache directory. |
+
+## Copy-paste localhost TLS and Hermes MCP setup
+
+This creates a self-signed server certificate that is trusted only by Hermes. It has Subject
+Alternative Names for both `localhost` and `127.0.0.1`; use `https://localhost:8443/mcp/` in the
+Hermes configuration so normal hostname validation succeeds. This is preferable to disabling
+verification or pinning a certificate fingerprint.
+
+Run once on the host that runs both Podman and Hermes:
+
+```bash
+umask 077
+TLS_DIR="$HOME/.config/omnifocus-mcp/tls"
+mkdir -p "$TLS_DIR"
+mkdir -p "$HOME/.local/share/omnifocus-mcp-cache"
+chmod 700 "$HOME/.local/share/omnifocus-mcp-cache"
+
+openssl genpkey -algorithm ED25519 -out "$TLS_DIR/server-key.pem"
+openssl req -x509 -new -sha256 -days 397 \
+  -key "$TLS_DIR/server-key.pem" \
+  -out "$TLS_DIR/server-cert.pem" \
+  -subj '/CN=localhost' \
+  -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+  -addext 'basicConstraints=critical,CA:FALSE' \
+  -addext 'keyUsage=critical,digitalSignature' \
+  -addext 'extendedKeyUsage=serverAuth'
+openssl rand -hex 32 > "$TLS_DIR/api-token"
+chmod 600 "$TLS_DIR/server-key.pem" "$TLS_DIR/api-token"
+
+podman secret create of-http-api-key "$TLS_DIR/api-token"
+```
+
+Create the WebDAV secrets as described in [Container and Runtime Notes](container.md#secrets),
+then start one long-lived local service:
+
+```bash
+podman run --rm -d --name omnifocus-mcp \
+  -p 127.0.0.1:8443:8443 \
+  -v "$TLS_DIR":/tls:ro \
+  -v "$HOME/.local/share/omnifocus-mcp-cache":/cache \
+  --secret of-http-api-key,target=of-http-api-key,uid=1001,gid=1001,mode=0400 \
+  --secret of-webdav-url,target=of-webdav-url,uid=1001,gid=1001,mode=0400 \
+  --secret of-webdav-user,target=of-webdav-user,uid=1001,gid=1001,mode=0400 \
+  --secret of-webdav-pass,target=of-webdav-pass,uid=1001,gid=1001,mode=0400 \
+  -e OF_CACHE_DIR=/cache \
+  -e OF_HTTP_API_KEY_FILE=/run/secrets/of-http-api-key \
+  -e OF_HTTP_TLS_CERT_FILE=/tls/server-cert.pem \
+  -e OF_HTTP_TLS_KEY_FILE=/tls/server-key.pem \
+  -e OF_WEBDAV_URL_FILE=/run/secrets/of-webdav-url \
+  -e OF_WEBDAV_USER_FILE=/run/secrets/of-webdav-user \
+  -e OF_WEBDAV_PASS_FILE=/run/secrets/of-webdav-pass \
+  ghcr.io/szymczag/omnifocus-cli:latest http
+```
+
+Add the following token reference to `~/.hermes/.env` without putting the token in
+`config.yaml`:
+
+```bash
+printf '\nOMNIFOCUS_MCP_TOKEN=%s\n' "$(<"$TLS_DIR/api-token")" >> "$HOME/.hermes/.env"
+chmod 600 "$HOME/.hermes/.env"
+```
+
+Then add this to `~/.hermes/config.yaml` and reload MCP configuration in Hermes:
+
+```yaml
+mcp_servers:
+  omnifocus:
+    url: https://localhost:8443/mcp/
+    ssl_verify: ~/.config/omnifocus-mcp/tls/server-cert.pem
+    headers:
+      Authorization: Bearer ${OMNIFOCUS_MCP_TOKEN}
+    tools:
+      resources: false
+      prompts: false
+```
+
+The `/mcp/` endpoint is server-enforced read-only. The same Bearer token is required for every
+request, including MCP initialization and tool discovery. Keep the service bound to `127.0.0.1`;
+do not use this self-signed setup for a remotely reachable service. To rotate the certificate or
+token, recreate the relevant file/Podman secret, recreate the container, and reload Hermes.
 
 ## Start the Server
 
@@ -75,7 +156,7 @@ and implementation summary.
 Example:
 
 ```bash
-curl --silent --show-error --insecure \
+curl --silent --show-error --cacert /absolute/path/to/server-cert.pem \
   -H "Authorization: Bearer replace-me" \
   https://127.0.0.1:8443/v1/openapi.json
 ```
@@ -88,12 +169,12 @@ Use the standard HTTP Request node:
 - URL: `https://127.0.0.1:8443/v1/...`
 - Authentication: Header auth
 - Header: `Authorization: Bearer <your-token>`
-- TLS: trust your certificate or disable verification only in a controlled local setup
+- TLS: trust the local certificate with the client's CA/certificate configuration; do not disable verification
 
 Minimal example:
 
 ```bash
-curl --silent --show-error --insecure \
+curl --silent --show-error --cacert /absolute/path/to/server-cert.pem \
   -H "Authorization: Bearer replace-me" \
   https://127.0.0.1:8443/v1/health
 ```

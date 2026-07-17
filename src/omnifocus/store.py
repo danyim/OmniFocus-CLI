@@ -66,6 +66,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from omnifocus.crypto.discovery import is_encrypted
+from omnifocus.env import read_env_or_file
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
 from omnifocus.models import Folder, OFModel, Project, Tag, Task
 from omnifocus.parser import build_model
@@ -217,7 +218,10 @@ class OFocusStore:
             OFWebDAVError: If required WebDAV env vars are missing.
         """
         client = WebDAVClient.from_env()
-        passphrase = os.environ.get("OF_ENCRYPTION_PASSPHRASE") or _webdav_password_from_env()
+        passphrase = (
+            read_env_or_file("OF_ENCRYPTION_PASSPHRASE", error_type=OFWebDAVError)
+            or _webdav_password_from_env()
+        )
         return cls(client=client, passphrase=passphrase or None)
 
     # ------------------------------------------------------------------
@@ -1381,10 +1385,10 @@ def _webdav_password_from_env() -> str:
     passphrase when ``OF_ENCRYPTION_PASSPHRASE`` is not explicitly set
     (OmniFocus *linked password* mode).
     """
-    explicit = os.environ.get("OF_WEBDAV_PASS", "")
+    explicit = read_env_or_file("OF_WEBDAV_PASS", error_type=OFWebDAVError) or ""
     if explicit:
         return explicit
-    raw_url = os.environ.get("OF_WEBDAV_URL", "")
+    raw_url = read_env_or_file("OF_WEBDAV_URL", error_type=OFWebDAVError) or ""
     return urlsplit(raw_url).password or ""
 
 

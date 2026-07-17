@@ -51,7 +51,9 @@ from omnifocus.mcp_server import (
     _text,
     _validate_folder_parent_change,
     _validate_tag_parent_change,
+    call_read_only_tool,
     call_tool,
+    list_read_only_tools,
     list_tools,
     main,
 )
@@ -1692,6 +1694,31 @@ class TestText:
         assert result[0].type == "text"
         parsed = json.loads(result[0].text)
         assert parsed["key"] == "value"
+
+
+class TestReadOnlyServer:
+    @pytest.mark.asyncio
+    async def test_lists_only_read_tools(self) -> None:
+        tools = await list_read_only_tools()
+
+        assert tools
+        assert {tool.name for tool in tools}.isdisjoint(
+            {"add_task", "complete_task", "sync_now", "drop_folder"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_rejects_mutation_tools(self) -> None:
+        result = await call_read_only_tool("add_task", {"name": "Nope"})
+
+        assert "not available from the read-only server" in result[0].text
+
+    @pytest.mark.asyncio
+    async def test_dispatches_read_tools(self) -> None:
+        expected = _text({"tasks": []})
+        with patch("omnifocus.mcp_server.call_tool", new=AsyncMock(return_value=expected)):
+            result = await call_read_only_tool("list_tasks", {})
+
+        assert result == expected
 
 
 # ---------------------------------------------------------------------------

@@ -203,6 +203,20 @@ class TestFromEnv:
         store = OFocusStore.from_env()
         assert store._passphrase == "secret"  # noqa: S105
 
+    def test_passphrase_reads_from_secret_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        passphrase_file = tmp_path / "passphrase"
+        passphrase_file.write_text("encryption-secret\n", encoding="utf-8")
+        monkeypatch.setenv("OF_WEBDAV_URL", "https://dav.example.com/of/")
+        monkeypatch.setenv("OF_WEBDAV_USER", "u")
+        monkeypatch.setenv("OF_WEBDAV_PASS", "p")
+        monkeypatch.setenv("OF_ENCRYPTION_PASSPHRASE_FILE", str(passphrase_file))
+
+        store = OFocusStore.from_env()
+
+        assert store._passphrase == "encryption-secret"  # noqa: S105
+
     def test_cache_dir_defaults_to_repo_local_dot_cache(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

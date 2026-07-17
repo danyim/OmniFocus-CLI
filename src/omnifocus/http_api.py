@@ -20,7 +20,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Sequence
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,7 +38,9 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from omnifocus import __version__
 from omnifocus.api_service import StoreBackedApiService, default_api_service
+from omnifocus.env import read_env_or_file
 from omnifocus.errors import OFError, OFHTTPError
+from omnifocus.mcp_http import ReadOnlyMCPHTTPApp
 
 _MAX_JSON_BODY_BYTES = 1024 * 1024
 _DEFAULT_ALLOWED_HOSTS = ("127.0.0.1", "localhost")
@@ -74,7 +76,7 @@ class HTTPServerConfig:
     def from_env(cls) -> HTTPServerConfig:
         """Load and validate HTTPS API configuration from environment variables."""
 
-        api_key = os.getenv("OF_HTTP_API_KEY")
+        api_key = read_env_or_file("OF_HTTP_API_KEY", error_type=OFError)
         cert_path = os.getenv("OF_HTTP_TLS_CERT_FILE")
         key_path = os.getenv("OF_HTTP_TLS_KEY_FILE")
         missing = [
@@ -1011,6 +1013,7 @@ def create_app(
     auth_failure_limit: int = _AUTH_FAILURE_LIMIT,
     auth_failure_window_seconds: float = _AUTH_FAILURE_WINDOW_SECONDS,
     request_timeout_seconds: float = _DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    enable_mcp: bool = False,
 ) -> FastAPI:
     """Create the FastAPI HTTPS application."""
 
@@ -1019,6 +1022,15 @@ def create_app(
         raise OFError("At least one HTTP API key is required")
     resolved_service = default_api_service() if service is None else service
     resolved_allowed_hosts = tuple(allowed_hosts or _DEFAULT_ALLOWED_HOSTS)
+    mcp_app = ReadOnlyMCPHTTPApp() if enable_mcp else None
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> Any:
+        if mcp_app is None:
+            yield
+            return
+        async with mcp_app.lifespan():
+            yield
 
     app = FastAPI(
         title="OmniFocus HTTPS API",
@@ -1026,8 +1038,11 @@ def create_app(
         docs_url=None,
         redoc_url=None,
         openapi_url="/v1/openapi.json",
+        lifespan=lifespan,
     )
     _configure_openapi(app)
+    if mcp_app is not None:
+        app.mount("/mcp", mcp_app)
 
     @app.exception_handler(OFError)
     async def of_error_handler(_request: Request, exc: Exception) -> JSONResponse:
@@ -1547,6 +1562,7 @@ async def _serve_uvicorn(
         api_keys=config.api_keys,
         allowed_hosts=config.allowed_hosts,
         service=service,
+        enable_mcp=True,
     )
     uvicorn_config = uvicorn.Config(
         app,
