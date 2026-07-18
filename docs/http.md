@@ -76,6 +76,7 @@ then start one long-lived local service:
 
 ```bash
 podman run --rm -d --name omnifocus-mcp \
+  --userns=keep-id:uid=1001,gid=1001 \
   -p 127.0.0.1:8443:8443 \
   -v "$TLS_DIR":/tls:ro \
   -v "$HOME/.local/share/omnifocus-mcp-cache":/cache \
@@ -83,6 +84,7 @@ podman run --rm -d --name omnifocus-mcp \
   --secret of-webdav-url,target=of-webdav-url,uid=1001,gid=1001,mode=0400 \
   --secret of-webdav-user,target=of-webdav-user,uid=1001,gid=1001,mode=0400 \
   --secret of-webdav-pass,target=of-webdav-pass,uid=1001,gid=1001,mode=0400 \
+  -e OF_HTTP_HOST=0.0.0.0 \
   -e OF_CACHE_DIR=/cache \
   -e OF_HTTP_API_KEY_FILE=/run/secrets/of-http-api-key \
   -e OF_HTTP_TLS_CERT_FILE=/tls/server-cert.pem \
@@ -90,8 +92,74 @@ podman run --rm -d --name omnifocus-mcp \
   -e OF_WEBDAV_URL_FILE=/run/secrets/of-webdav-url \
   -e OF_WEBDAV_USER_FILE=/run/secrets/of-webdav-user \
   -e OF_WEBDAV_PASS_FILE=/run/secrets/of-webdav-pass \
-  ghcr.io/szymczag/omnifocus-cli:latest http
+  ghcr.io/szymczag/omnifocus-cli:v1.4.1 http
 ```
+
+`OF_HTTP_HOST=0.0.0.0` binds the server to the container network interface so rootless Podman can
+forward the published port. It does not make the service remotely reachable: the `PublishPort`
+equivalent above still exposes it only as `127.0.0.1:8443` on the host. The user namespace mapping
+lets the non-root image user read the `0600` key and certificate files without relaxing their host
+permissions.
+
+### Start automatically with rootless systemd
+
+After confirming the manual container works, replace it with a rootless Quadlet. This starts the
+service on login, restarts it after failures, and (with lingering enabled) starts it after host
+reboots even before you log in.
+
+```bash
+podman stop omnifocus-mcp
+mkdir -p "$HOME/.config/containers/systemd"
+```
+
+Create `~/.config/containers/systemd/omnifocus-mcp.container` with the following content:
+
+```ini
+[Unit]
+Description=OmniFocus HTTPS MCP service
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=ghcr.io/szymczag/omnifocus-cli:v1.4.1
+ContainerName=omnifocus-mcp
+UserNS=keep-id:uid=1001,gid=1001
+PublishPort=127.0.0.1:8443:8443
+Volume=%h/.config/omnifocus-mcp/tls:/tls:ro
+Volume=%h/.local/share/omnifocus-mcp-cache:/cache
+Secret=of-http-api-key,target=of-http-api-key,uid=1001,gid=1001,mode=0400
+Secret=of-webdav-url,target=of-webdav-url,uid=1001,gid=1001,mode=0400
+Secret=of-webdav-user,target=of-webdav-user,uid=1001,gid=1001,mode=0400
+Secret=of-webdav-pass,target=of-webdav-pass,uid=1001,gid=1001,mode=0400
+Environment=OF_HTTP_HOST=0.0.0.0
+Environment=OF_CACHE_DIR=/cache
+Environment=OF_HTTP_API_KEY_FILE=/run/secrets/of-http-api-key
+Environment=OF_HTTP_TLS_CERT_FILE=/tls/server-cert.pem
+Environment=OF_HTTP_TLS_KEY_FILE=/tls/server-key.pem
+Environment=OF_WEBDAV_URL_FILE=/run/secrets/of-webdav-url
+Environment=OF_WEBDAV_USER_FILE=/run/secrets/of-webdav-user
+Environment=OF_WEBDAV_PASS_FILE=/run/secrets/of-webdav-pass
+Exec=http
+
+[Service]
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+Then enable it and keep the user service manager running across reboots:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now omnifocus-mcp.service
+loginctl enable-linger "$USER"
+```
+
+Verify the service with `systemctl --user status omnifocus-mcp.service` and inspect logs with
+`journalctl --user -u omnifocus-mcp.service`. Keep `PublishPort=127.0.0.1:8443:8443`; changing it
+to `0.0.0.0:8443:8443` would expose the full read/write MCP service to the network.
 
 Add the following token reference to `~/.hermes/.env` without putting the token in
 `config.yaml`:
