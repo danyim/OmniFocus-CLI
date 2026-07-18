@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "omnifocus-cli"
-version = "1.3.0"
+version = "1.4.0"
 description = "Independent CLI and MCP server for OmniFocus 4, running in Podman"
 readme = "README.md"
 requires-python = ">=3.14"

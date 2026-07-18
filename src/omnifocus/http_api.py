@@ -40,7 +40,7 @@ from omnifocus import __version__
 from omnifocus.api_service import StoreBackedApiService, default_api_service
 from omnifocus.env import read_env_or_file
 from omnifocus.errors import OFError, OFHTTPError
-from omnifocus.mcp_http import ReadOnlyMCPHTTPApp
+from omnifocus.mcp_http import MCPHTTPApp
 
 _MAX_JSON_BODY_BYTES = 1024 * 1024
 _DEFAULT_ALLOWED_HOSTS = ("127.0.0.1", "localhost")
@@ -1022,7 +1022,7 @@ def create_app(
         raise OFError("At least one HTTP API key is required")
     resolved_service = default_api_service() if service is None else service
     resolved_allowed_hosts = tuple(allowed_hosts or _DEFAULT_ALLOWED_HOSTS)
-    mcp_app = ReadOnlyMCPHTTPApp() if enable_mcp else None
+    mcp_app = MCPHTTPApp() if enable_mcp else None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> Any:

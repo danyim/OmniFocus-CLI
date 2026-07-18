@@ -34,6 +34,7 @@ from omnifocus.http_api import (
     main,
     run_server,
 )
+from omnifocus.models import OFModel
 
 _TEST_API_KEY = "test-api-key"
 _TEST_ALLOWED_HOSTS = ("testserver", "127.0.0.1", "localhost")
@@ -347,7 +348,7 @@ def _create_client(
     )
 
 
-class TestReadOnlyMCP:
+class TestMCP:
     def test_default_app_has_no_mcp_lifespan(self) -> None:
         client = _create_client(_FakeService())
 
@@ -364,8 +365,9 @@ class TestReadOnlyMCP:
 
         assert response.status_code == 401
 
-    def test_initializes_and_lists_read_only_tools(self) -> None:
-        client = _create_client(_FakeService(), enable_mcp=True)
+    def test_initializes_lists_and_calls_mutation_tools(self) -> None:
+        service = _FakeService()
+        client = _create_client(service, enable_mcp=True)
         initialize = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -377,17 +379,31 @@ class TestReadOnlyMCP:
             },
         }
         list_tools = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+        add_task = {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "add_task", "arguments": {"name": "Plan release"}},
+        }
         headers = _auth_headers(Accept="application/json, text/event-stream")
 
-        with client:
-            initialized = client.post("/mcp/", json=initialize, headers=headers)
-            tools = client.post("/mcp/", json=list_tools, headers=headers)
+        with (
+            patch("omnifocus.mcp_server._service", return_value=service),
+            patch("omnifocus.mcp_server._load_model", new=AsyncMock(return_value=OFModel())),
+        ):
+            with client:
+                initialized = client.post("/mcp/", json=initialize, headers=headers)
+                tools = client.post("/mcp/", json=list_tools, headers=headers)
+                added = client.post("/mcp/", json=add_task, headers=headers)
 
         assert initialized.status_code == 200
         assert tools.status_code == 200
+        assert added.status_code == 200
         names = {tool["name"] for tool in tools.json()["result"]["tools"]}
         assert "list_tasks" in names
-        assert "add_task" not in names
+        assert "add_task" in names
+        assert service.calls[-1][0] == "add_task"
+        assert service.calls[-1][1]["name"] == "Plan release"
 
 
 def _write_self_signed_cert(tmp_path: Path) -> tuple[Path, Path]:
