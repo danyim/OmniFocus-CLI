@@ -1,4 +1,4 @@
-"""Read-only Streamable HTTP transport for the OmniFocus MCP server."""
+"""Streamable HTTP transport for the OmniFocus MCP server."""
 
 from __future__ import annotations
 
@@ -9,15 +9,15 @@ from typing import Any
 
 from mcp.server.streamable_http import StreamableHTTPServerTransport
 
-from omnifocus.mcp_server import read_only_server
+from omnifocus.mcp_server import server
 
 Scope = MutableMapping[str, Any]
 Receive = Callable[[], Awaitable[Scope]]
 Send = Callable[[Scope], Awaitable[None]]
 
 
-class ReadOnlyMCPHTTPApp:
-    """ASGI adapter and lifespan owner for a stateless read-only MCP server."""
+class MCPHTTPApp:
+    """ASGI adapter and lifespan owner for the stateless full MCP server."""
 
     def __init__(self) -> None:
         self._transport = StreamableHTTPServerTransport(
@@ -34,10 +34,10 @@ class ReadOnlyMCPHTTPApp:
         """Run the low-level MCP server for the lifetime of the ASGI application."""
         async with self._transport.connect() as (read_stream, write_stream):
             server_task = asyncio.create_task(
-                read_only_server.run(
+                server.run(
                     read_stream,
                     write_stream,
-                    read_only_server.create_initialization_options(),
+                    server.create_initialization_options(),
                     stateless=True,
                 )
             )

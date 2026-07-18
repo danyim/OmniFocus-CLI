@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-18
+
+### Changed
+
+- Expose the complete read/write OmniFocus MCP tool set through the authenticated HTTPS `/mcp/`
+  endpoint, matching the existing stdio MCP transport
+- Remove the temporary server-side read-only restriction from the local Hermes deployment guide
+
 ## [1.3.0] - 2026-07-17
 
 ### Added

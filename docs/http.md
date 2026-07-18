@@ -115,10 +115,12 @@ mcp_servers:
       prompts: false
 ```
 
-The `/mcp/` endpoint is server-enforced read-only. The same Bearer token is required for every
-request, including MCP initialization and tool discovery. Keep the service bound to `127.0.0.1`;
-do not use this self-signed setup for a remotely reachable service. To rotate the certificate or
-token, recreate the relevant file/Podman secret, recreate the container, and reload Hermes.
+The `/mcp/` endpoint exposes the complete OmniFocus MCP tool set, including tools that create,
+update, complete, drop, and sync OmniFocus data. The same Bearer token is required for every
+request, including MCP initialization, tool discovery, and mutations. Keep the service bound to
+`127.0.0.1`; do not use this self-signed setup for a remotely reachable service. To rotate the
+certificate or token, recreate the relevant file/Podman secret, recreate the container, and reload
+Hermes.
 
 ## Start the Server
 
