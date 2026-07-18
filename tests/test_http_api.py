@@ -1218,8 +1218,9 @@ class TestHTTPServerRuntime:
         config_kwargs = mock_config.call_args.kwargs
         assert config_kwargs["server_header"] is False
         assert config_kwargs["date_header"] is False
-        assert isinstance(fake_uvicorn_config.ssl, ssl.SSLContext)
-        assert fake_uvicorn_config.ssl.minimum_version == ssl.TLSVersion.TLSv1_3
+        ssl_context = config_kwargs["ssl_context_factory"](MagicMock(), MagicMock())
+        assert isinstance(ssl_context, ssl.SSLContext)
+        assert ssl_context.minimum_version == ssl.TLSVersion.TLSv1_3
         mock_server.assert_called_once_with(fake_uvicorn_config)
         fake_server.serve.assert_awaited_once_with()
 

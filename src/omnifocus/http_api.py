@@ -1572,9 +1572,9 @@ async def _serve_uvicorn(
         log_level="warning",
         server_header=False,
         date_header=False,
+        ssl_context_factory=lambda _uvicorn_config, _default_factory: build_ssl_context(config),
     )
     uvicorn_config.load()
-    uvicorn_config.ssl = build_ssl_context(config)
     server = uvicorn.Server(uvicorn_config)
     await server.serve()
 
