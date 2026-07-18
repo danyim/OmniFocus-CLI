@@ -153,9 +153,15 @@ Then enable it and keep the user service manager running across reboots:
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now omnifocus-mcp.service
-loginctl enable-linger "$USER"
+systemctl --user start omnifocus-mcp.service
+sudo loginctl enable-linger "$USER"
 ```
+
+Quadlet services are generated units, so `systemctl --user enable` intentionally does not work for
+them. Quadlet applies the `[Install]` section during generation; the explicit `start` command
+starts the service immediately. Enabling lingering needs administrator authorization and makes the
+user systemd manager start at boot, so the generated `WantedBy=default.target` dependency starts
+the service without a login session.
 
 Verify the service with `systemctl --user status omnifocus-mcp.service` and inspect logs with
 `journalctl --user -u omnifocus-mcp.service`. Keep `PublishPort=127.0.0.1:8443:8443`; changing it
