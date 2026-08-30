@@ -21,7 +21,7 @@ __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 import asyncio
 import base64
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from urllib.parse import urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
@@ -57,7 +57,7 @@ class _ChallengeAuth(httpx.Auth):
         self._password = password
         self._mode: str | None = None  # None = undecided, "basic", "digest"
 
-    def auth_flow(self, request: httpx.Request) -> Iterator[httpx.Request]:
+    def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response]:
         if self._mode == "digest":
             yield from httpx.DigestAuth(self._username, self._password).auth_flow(request)
             return
@@ -73,8 +73,10 @@ class _ChallengeAuth(httpx.Auth):
             yield from httpx.DigestAuth(self._username, self._password).auth_flow(request)
             return
 
+        # Not a Digest challenge: the received response is final. httpx's auth
+        # protocol ends the flow here (no further yield) and returns the
+        # response that was just sent in.
         self._mode = "basic"
-        yield response
 
 
 def _resolve_redirect_url(base_url: str) -> str:
